@@ -1,0 +1,27 @@
+{
+  "canisters": {
+    "zk-trainer-backend": {
+      "candid": "src/zk-trainer-backend/zk-trainer-backend.did",
+      "package": "zk-trainer-backend",
+      "type": "rust"
+    },
+    "zk-trainer-frontend": {
+      "dependencies": [
+        "zk-trainer-backend"
+      ],
+      "source": [
+        "src/zk-trainer-frontend/dist"
+      ],
+      "type": "assets",
+      "workspace": "zk-trainer-frontend"
+    }
+  },
+  "defaults": {
+    "build": {
+      "args": "",
+      "packtool": ""
+    }
+  },
+  "output_env_file": ".env",
+  "version": 1
+}
