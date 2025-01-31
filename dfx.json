@@ -1,9 +1,16 @@
 {
   "canisters": {
-    "zk-trainer-backend": {
-      "candid": "src/zk-trainer-backend/zk-trainer-backend.did",
-      "package": "zk-trainer-backend",
+    "wrapper": {
+      "candid": "src/wrapper/wrapper.did",
+      "package": "wrapper",
       "type": "rust"
+    },
+    "zk-trainer-backend": {
+      "main": "src/zk-trainer-backend/main.mo",
+      "type": "motoko",
+      "dependencies": [
+        "wrapper"
+      ]
     },
     "zk-trainer-frontend": {
       "dependencies": [

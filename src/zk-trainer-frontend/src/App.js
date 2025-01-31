@@ -1,5 +1,5 @@
 import { html, render } from 'lit-html';
-import { zk_trainer_backend } from 'declarations/zk-trainer-backend';
+import { wrapper } from 'declarations/wrapper';
 import logo from './logo2.svg';
 
 class App {
@@ -12,7 +12,7 @@ class App {
   #handleSubmit = async (e) => {
     e.preventDefault();
     const name = document.getElementById('name').value;
-    this.greeting = await zk_trainer_backend.greet(name);
+    this.greeting = await wrapper.greet(name);
     this.#render();
   };
 
