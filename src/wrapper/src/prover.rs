@@ -1,14 +1,13 @@
-// This is a first draft, based on the Winterfell documentation and
-// yet to be proofread or debugged.
-
 use winterfell::{
     crypto::{hashers::Blake3_256, DefaultRandomCoin},
     math::{fields::f128::BaseElement, FieldElement, ToElements},
     matrix::ColMatrix,
-    Air, AirContext, Assertion, EvaluationFrame, DefaultConstraintEvaluator,
-    DefaultTraceLde, FieldExtension, HashFunction, ProofOptions, Prover,
-    StarkDomain,Trace, TraceInfo,
-    TraceTable, TracePolyTable, TransitionConstraintDegree,
+    Air, AirContext, Assertion, CompositionPoly, CompositionPolyTrace,
+    DefaultConstraintCommitment, DefaultConstraintEvaluator, DefaultTraceLde,
+    EvaluationFrame, FieldExtension, HashFunction, PartitionOptions,
+    Proof, ProofOptions, Prover, StarkDomain,
+    Trace, TraceInfo, TraceTable, TracePolyTable,
+    TransitionConstraintDegree,
 };
 use sha2::{Sha256, Digest};
 use std::convert::TryInto;
@@ -21,21 +20,21 @@ pub struct Model {
     pub weights_hidden_output: Vec<BaseElement>,
     pub bias_hidden: Vec<BaseElement>,
     pub bias_output: BaseElement,
-};
+}
 
 pub struct Dataset {
     pub input_matrix: Vec<Vec<BaseElement>>, // Each row is an input vector
     pub expected_output: Vec<BaseElement>,
-};
+}
 
 // A simple sigmoid approximation using Taylor series
 fn sigmoid_approx(x: BaseElement) -> BaseElement {
     BaseElement::new(0.5) + BaseElement::new(0.25) * x - (x.pow(3) / BaseElement::new(48.0))
-};
+}
 
 fn is_power_of_2(n: usize) -> bool {
     n != 0 && (n & (n - 1)) == 0
-};
+}
 
 fn update_hash(
     current_hash: BaseElement,
@@ -49,7 +48,7 @@ fn update_hash(
     let hash_bytes = hasher.finalize();
     let hash_value = u64::from_le_bytes(hash_bytes[..8].try_into().unwrap());
     BaseElement::from(hash_value)
-};
+}
 
 fn generate_nn_trace(
     num_epochs: usize,
@@ -59,12 +58,12 @@ fn generate_nn_trace(
 ) -> TraceTable<BaseElement> {
     let num_samples = dataset.input_matrix.len();
     let len_sample = dataset.input_matrix[0].len();
-    let hidden_size = model. weights_input_hidden.len();
+    let hidden_size = model.weights_input_hidden.len();
     assert!(is_power_of_2(num_epochs), "Number of epochs must be a power of 2");
     assert!(is_power_of_2(num_samples + 1), "Number of samples + 1 must be a power of 2");
     let num_columns = (len_sample + 2)(hidden_size + 1) + 5; // Includes flag, len_sample, hidden_size, learning_rate, sample, expected, hash, weights and biases
     assert!(num_columns <= 255, "Too many columns");
-    let mut trace = TraceTable::new(num_columns, num_epochs * num_samples + 1);
+    let mut trace = TraceTable::new(num_columns, num_epochs * (num_samples + 1));
     let mut dataset_hash = BaseElement::ZERO;
     let mut w_b_hash = BaseElement::ZERO;
 
@@ -139,22 +138,22 @@ fn generate_nn_trace(
     }
 
     trace
-};
+}
 
 // AIR
 // Public inputs for our computation will consist of the starting value and the end result.
 pub struct PublicInputs {
-    start: BaseElement,                // hash of initial weights and biases
-    updated: BaseElement,               // hash of final weights and biases
-    datahash: BaseElement,             // hash of dataset
-};
+    start: BaseElement,           // hash of initial weights and biases
+    updated: BaseElement,         // hash of final weights and biases
+    datahash: BaseElement,        // hash of dataset
+}
 
 // We need to describe how public inputs can be converted to field elements.
 impl ToElements<BaseElement> for PublicInputs {
     fn to_elements(&self) -> Vec<BaseElement> {
         vec![self.start, self.updated, self.datahash]
-    };
-};
+    }
+}
 
 // For a specific instance of our computation, we'll keep track of the public inputs and
 // the computation's context which we'll build in the constructor. The context is used
@@ -163,7 +162,7 @@ pub struct WorkAir {
     context: AirContext<BaseElement>,
     start: BaseElement,
     result: Vec<BaseElement>,
-};
+}
 
 impl Air for WorkAir {
     // First, we'll specify which finite field to use for our computation, and also how
@@ -191,7 +190,7 @@ impl Air for WorkAir {
             start: pub_inputs.start,
             result: pub_inputs.result,
         }
-    };
+    }
 
 
     // In this method we'll define our transition constraints; a computation is considered to
@@ -252,22 +251,22 @@ impl Air for WorkAir {
             };
             bias_o += learning_rate * error;
             w_b_hash = update_hash(w_b_hash, [
-                model.weights_input_hidden.clone(),
-                model.weights_hidden_output.clone(),
-                model.bias_hidden.clone(),
-                vec![model.bias_output]
+                weights_ih.clone(),
+                weights_ho.clone(),
+                biases_h.clone(),
+                vec![bias_o]
             ].concat());
         };
 
         let next_state = [
             vec![dataset_hash], // Current dataset hash (previous row)
             vec![w_b_hash] // Hash of weights and bias (current row)
-        ].concat());
+        ].concat();
 
         for i in 0..2 {
             result[i] = frame.next()[0][i + 4] - next_state[i];
         };
-    };
+    }
 
 
     // Here, we'll define a set of assertions about the execution trace which must be satisfied
@@ -282,15 +281,15 @@ impl Air for WorkAir {
             Assertion::single(4, last_step, self.updated), // hash of final weights & biases
             Assertion::single(5, last_step, self.datahash), // dataset hash
         ]
-    };
+    }
 
 
     // This is just boilerplate which is used by the Winterfell prover/verifier to retrieve
     // the context of the computation.
     fn context(&self) -> &AirContext<Self::BaseField> {
         &self.context
-    };
-};
+    }
+}
 
 // PROVER
 // We'll use BLAKE3 as the hash function during proof generation.
@@ -300,13 +299,13 @@ type Blake3 = Blake3_256<BaseElement>;
 // struct.
 struct WorkProver {
     options: ProofOptions,
-};
+}
 
 impl WorkProver {
     pub fn new(options: ProofOptions) -> Self {
         Self { options }
-    };
-};
+    }
+}
 
 // When implementing the Prover trait we set the `Air` associated type to the AIR of the
 // computation we defined previously, and set the `Trace` associated type to `TraceTable`
@@ -322,7 +321,7 @@ impl Prover for WorkProver {
     type ConstraintEvaluator<'a, E: FieldElement<BaseField = BaseElement>> =
         DefaultConstraintEvaluator<'a, WorkAir, E>;
     type ConstraintCommitment<E: FieldElement<BaseField = Self::BaseField>> =
-        DefaultConstraintCommitment<E, H, Self::VC>;
+        DefaultConstraintCommitment<E, Self::HashFn, Self::VC>;
 
     // Our public inputs consist of the first and last value in the execution trace.
     fn get_pub_inputs(&self, trace: &Self::Trace) -> PublicInputs {
@@ -332,7 +331,7 @@ impl Prover for WorkProver {
             updated: trace.get(4, last_step),
             datahash: trace.get(5, last_step),
         }
-    };
+    }
 
     // We'll use the default trace low-degree extension.
     fn new_trace_lde<E: FieldElement<BaseField = Self::BaseField>>(
@@ -342,7 +341,7 @@ impl Prover for WorkProver {
         domain: &StarkDomain<Self::BaseField>,
     ) -> (Self::TraceLde<E>, TracePolyTable<E>) {
         DefaultTraceLde::new(trace_info, main_trace, domain)
-    };
+    }
 
     // We'll use the default constraint evaluator to evaluate AIR constraints.
     fn new_evaluator<'a, E: FieldElement<BaseField = BaseElement>>(
@@ -352,7 +351,7 @@ impl Prover for WorkProver {
         composition_coefficients: winterfell::ConstraintCompositionCoefficients<E>,
     ) -> Self::ConstraintEvaluator<'a, E> {
         DefaultConstraintEvaluator::new(air, aux_rand_elements, composition_coefficients)
-    };
+    }
 
     // We'll use the default constraint commitment.
     fn build_constraint_commitment<E: FieldElement<BaseField = Self::BaseField>>(
@@ -368,12 +367,12 @@ impl Prover for WorkProver {
             domain,
             partition_options,
         )
-    };
+    }
 
     fn options(&self) -> &ProofOptions {
         &self.options
-    };
-};
+    }
+}
 pub fn prove_work(
     num_epochs: usize,
     learning_rate: BaseElement,
@@ -382,8 +381,11 @@ pub fn prove_work(
 ) -> (Model, BaseElement, Proof) {
     // Build the execution trace and get the result from the last step.
     let trace = generate_nn_trace(num_epochs, learning_rate, model, dataset);
-
+    let n = num_epochs * (dataset.input_matrix.len() + 1);
     let final_row = &trace[n - 1];
+    let len_sample = dataset.input_matrix[0].len();
+    let hidden_size = model.weights_input_hidden.len();
+
     let weights_input_hidden = final_row.get((7 + len_sample)..(7 + len_sample + len_sample * hidden_size));
     let weights_hidden_output = final_row.get((7 + len_sample + len_sample * hidden_size)..(7 + len_sample + len_sample * hidden_size + hidden_size));
     let bias_hidden = final_row.get((7 + len_sample + len_sample * hidden_size + hidden_size)..(7 + len_sample + len_sample * hidden_size + 2 * hidden_size));
@@ -412,4 +414,4 @@ pub fn prove_work(
     let proof = prover.prove(trace).unwrap();
 
     (updated_model, dataset_hash, proof)
-};
+}
