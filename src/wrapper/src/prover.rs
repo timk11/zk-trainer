@@ -373,7 +373,7 @@ impl Prover for WorkProver {
         &self.options
     }
 }
-pub fn prove_work(
+pub(crate) fn prove_work(
     num_epochs: usize,
     learning_rate: BaseElement,
     mut model: Model,

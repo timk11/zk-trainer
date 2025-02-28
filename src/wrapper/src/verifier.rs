@@ -42,7 +42,7 @@ fn update_hash(
     BaseElement::from(hash_value)
 }
 
-pub fn verify_work(initial_model: Model, updated_model: Model, datahash: BaseElement, proof: Proof) -> bool {
+pub(crate) fn verify_work(initial_model: Model, updated_model: Model, datahash: BaseElement, proof: Proof) -> bool {
     // Convert initial and updated models into hashes
     let start = update_hash(BaseElement::ZERO, [
         initial_model.weights_input_hidden.clone(),
