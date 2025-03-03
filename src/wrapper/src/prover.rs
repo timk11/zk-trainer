@@ -2,9 +2,10 @@ use winterfell::{
     crypto::{hashers::Blake3_256, DefaultRandomCoin},
     math::{fields::f128::BaseElement, FieldElement, ToElements},
     matrix::ColMatrix,
-    Air, AirContext, Assertion, CompositionPoly, CompositionPolyTrace,
+    Air, AirContext, Assertion, AuxRandElements, BatchingMethod,
+    CompositionPoly, CompositionPolyTrace,
     DefaultConstraintCommitment, DefaultConstraintEvaluator, DefaultTraceLde,
-    EvaluationFrame, FieldExtension, HashFunction, PartitionOptions,
+    EvaluationFrame, FieldExtension, PartitionOptions,
     Proof, ProofOptions, Prover, StarkDomain,
     Trace, TraceInfo, TraceTable, TracePolyTable,
     TransitionConstraintDegree,
@@ -29,7 +30,7 @@ pub struct Dataset {
 
 // A simple sigmoid approximation using Taylor series
 fn sigmoid_approx(x: BaseElement) -> BaseElement {
-    BaseElement::new(0.5) + BaseElement::new(0.25) * x - (x.pow(3) / BaseElement::new(48.0))
+    BaseElement::new(0.5) + BaseElement::new(0.25) * x - (x.exp(3) / BaseElement::new(48.0))
 }
 
 fn is_power_of_2(n: usize) -> bool {
@@ -61,7 +62,7 @@ fn generate_nn_trace(
     let hidden_size = model.weights_input_hidden.len();
     assert!(is_power_of_2(num_epochs), "Number of epochs must be a power of 2");
     assert!(is_power_of_2(num_samples + 1), "Number of samples + 1 must be a power of 2");
-    let num_columns = (len_sample + 2)(hidden_size + 1) + 5; // Includes flag, len_sample, hidden_size, learning_rate, sample, expected, hash, weights and biases
+    let num_columns = (len_sample + 2) * (hidden_size + 1) + 5; // Includes flag, len_sample, hidden_size, learning_rate, sample, expected, hash, weights and biases
     assert!(num_columns <= 255, "Too many columns");
     let mut trace = TraceTable::new(num_columns, num_epochs * (num_samples + 1));
     let mut dataset_hash = BaseElement::ZERO;
@@ -72,16 +73,16 @@ fn generate_nn_trace(
         for sample_idx in 0..num_samples {
             let input = &dataset.input_matrix[sample_idx];
             let expected = dataset.expected_output[sample_idx];
-            w_b_hash = update_hash(w_b_hash, [
+            w_b_hash = update_hash(w_b_hash, &[
                 model.weights_input_hidden.clone(),
                 model.weights_hidden_output.clone(),
                 model.bias_hidden.clone(),
                 vec![model.bias_output]
             ].concat());
-            trace.update_row(epoch * num_samples + sample_idx, [
+            trace.update_row(epoch * num_samples + sample_idx, &[
                 vec![BaseElement::new(0)],
-                vec![BaseElement::new(len_sample)],
-                vec![BaseElement::new(hidden_size)],
+                vec![BaseElement::new(len_sample.try_into().unwrap())],
+                vec![BaseElement::new(hidden_size.try_into().unwrap())],
                 vec![learning_rate],
                 vec![dataset_hash], // Current dataset hash (previous row)
                 vec![w_b_hash], // Hash of weights and biases (current row)
@@ -92,7 +93,7 @@ fn generate_nn_trace(
                 model.bias_hidden.clone(),
                 vec![model.bias_output]
             ].concat());
-            dataset_hash = update_hash(dataset_hash, [input, vec![expected]].concat());
+            dataset_hash = update_hash(dataset_hash, [input, &vec![expected]].concat());
             let mut hidden_activations = vec![BaseElement::ZERO; hidden_size];
             let mut hidden_errors = vec![BaseElement::ZERO; hidden_size];
             let mut hidden_gradients = vec![BaseElement::ZERO; hidden_size];
@@ -103,14 +104,14 @@ fn generate_nn_trace(
                 for i in 0..input.len() {
                     activation += input[i] * model.weights_input_hidden[j];
                 }
-                hidden_activations[j] = activation * (BaseElement::new(0.5) + BaseElement::new(0.25) * activation - (activation.pow(3) / BaseElement::new(48.0)));
+                hidden_activations[j] = activation * (BaseElement::new(0.5) + BaseElement::new(0.25) * activation - (activation.exp(3) / BaseElement::new(48.0)));
                 output += hidden_activations[j] * model.weights_hidden_output[j];
             }
 
             let error = output - expected;
             for j in 0..hidden_size {
                 hidden_errors[j] = error;
-                hidden_gradients[j] = error * hidden_activations[j] * (BaseElement::one() - hidden_activations[j]);
+                hidden_gradients[j] = error * hidden_activations[j] * (BaseElement::ONE() - hidden_activations[j]);
                 model.weights_input_hidden[j] += learning_rate * hidden_gradients[j];
                 model.weights_hidden_output[j] += learning_rate * hidden_gradients[j];
                 model.bias_hidden[j] += learning_rate * hidden_gradients[j];
@@ -120,11 +121,11 @@ fn generate_nn_trace(
         }
 
         // Append separator row (n+1) with zero sample data
-        let zero_sample = vec![BaseElement::ZERO; dataset.inputs[0].len()];
-        trace.update_row((epoch + 1) * num_samples - 1, [
+        let zero_sample = vec![BaseElement::ZERO; dataset.input_matrix[0].len()];
+        trace.update_row((epoch + 1) * num_samples - 1, &[
             vec![BaseElement::new(1)],
-            vec![BaseElement::new(len_sample)],
-            vec![BaseElement::new(hidden_size)],
+            vec![BaseElement::new(len_sample.try_into().unwrap())],
+            vec![BaseElement::new(hidden_size.try_into().unwrap())],
             vec![learning_rate],
             vec![dataset_hash],
             vec![w_b_hash],
@@ -161,7 +162,8 @@ impl ToElements<BaseElement> for PublicInputs {
 pub struct WorkAir {
     context: AirContext<BaseElement>,
     start: BaseElement,
-    result: Vec<BaseElement>,
+    result: BaseElement,
+    datahash: BaseElement,
 }
 
 impl Air for WorkAir {
@@ -183,12 +185,13 @@ impl Air for WorkAir {
         // We also need to specify the exact number of assertions we will place against the
         // execution trace. This number must be the same as the number of items in a vector
         // returned from the get_assertions() method below.
-        let num_assertions = 2;
+        let num_assertions = 3;
 
         WorkAir {
             context: AirContext::new(trace_info, degrees, num_assertions, options),
             start: pub_inputs.start,
-            result: pub_inputs.result,
+            result: pub_inputs.updated,
+            datahash: pub_inputs.datahash,
         }
     }
 
@@ -209,7 +212,7 @@ impl Air for WorkAir {
         // Then, we'll subtract the expected next state from the actual next state; this will
         // evaluate to zero if and only if the expected and actual states are the same.
 
-        let current_state = frame.current()[0];
+        let current_state = frame.current();
         let flag = current_state[0];
         let len_sample = current_state[1];
         let hidden_size = current_state[2];
@@ -228,10 +231,10 @@ impl Air for WorkAir {
         let mut hidden_gradients = vec![BaseElement::ZERO; hidden_size];
         let mut output = bias_o;
 
-        if (flag == 1) { dataset_hash = BaseElement::ZERO; };
+        if flag == 1 { dataset_hash = BaseElement::ZERO; };
         dataset_hash = update_hash(dataset_hash, [input, vec![expected]].concat());
 
-        if (flag == 0) {
+        if flag == 0 {
             for j in 0..hidden_size {
                 let mut activation = biases_h[j];
                 for i in 0..len_sample {
@@ -264,7 +267,7 @@ impl Air for WorkAir {
         ].concat();
 
         for i in 0..2 {
-            result[i] = frame.next()[0][i + 4] - next_state[i];
+            result[i] = frame.next()[i + 4] - next_state[i];
         };
     }
 
@@ -278,7 +281,7 @@ impl Air for WorkAir {
         let last_step = self.trace_length() - 1;
         vec![
             Assertion::single(4, 0, self.start), // hash of initial weights & biases
-            Assertion::single(4, last_step, self.updated), // hash of final weights & biases
+            Assertion::single(4, last_step, self.result), // hash of final weights & biases
             Assertion::single(5, last_step, self.datahash), // dataset hash
         ]
     }
@@ -317,6 +320,7 @@ impl Prover for WorkProver {
     type Trace = TraceTable<BaseElement>;
     type HashFn = Blake3;
     type RandomCoin = DefaultRandomCoin<Blake3>;
+    type VC = Blake3_256<HashFn>;
     type TraceLde<E: FieldElement<BaseField = BaseElement>> = DefaultTraceLde<E, Blake3>;
     type ConstraintEvaluator<'a, E: FieldElement<BaseField = BaseElement>> =
         DefaultConstraintEvaluator<'a, WorkAir, E>;
@@ -339,8 +343,9 @@ impl Prover for WorkProver {
         trace_info: &TraceInfo,
         main_trace: &ColMatrix<Self::BaseField>,
         domain: &StarkDomain<Self::BaseField>,
+        partition_options: PartitionOptions,
     ) -> (Self::TraceLde<E>, TracePolyTable<E>) {
-        DefaultTraceLde::new(trace_info, main_trace, domain)
+        DefaultTraceLde::new(trace_info, main_trace, domain, partition_options)
     }
 
     // We'll use the default constraint evaluator to evaluate AIR constraints.
@@ -381,8 +386,13 @@ pub(crate) fn prove_work(
 ) -> (Model, BaseElement, Proof) {
     // Build the execution trace and get the result from the last step.
     let trace = generate_nn_trace(num_epochs, learning_rate, model, dataset);
-    let n = num_epochs * (dataset.input_matrix.len() + 1);
-    let final_row = &trace[n - 1];
+    let n = num_epochs * (dataset.input_matrix.len() + 1); //  number of rows
+    let len_sample = dataset.input_matrix[0].len();
+    let hidden_size = model.weights_input_hidden.len();
+    let num_columns = (len_sample + 2) * (hidden_size + 1) + 5;
+    let mut final_row = vec![0; num_columns];
+    trace.read_row_into(n - 1, final_row);
+    //let final_row = &trace[n - 1];
     let len_sample = dataset.input_matrix[0].len();
     let hidden_size = model.weights_input_hidden.len();
 
@@ -407,6 +417,8 @@ pub(crate) fn prove_work(
         FieldExtension::None,
         8,   // FRI folding factor
         127, // FRI remainder max degree
+        BatchingMethod::Linear,
+        BatchingMethod::Linear,
     );
 
     // Instantiate the prover and generate the proof.

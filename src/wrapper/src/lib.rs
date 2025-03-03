@@ -2,6 +2,11 @@ use winterfell::{
     math::fields::f128::BaseElement,
     Proof,
 };
+use sha2::Sha256;
+
+mod prover;
+mod verifier;
+
 use crate::prover::prove_work;
 use crate::verifier::verify_work;
 
@@ -63,16 +68,16 @@ fn initialise_model(
 fn train_and_prove(
     num_epochs: usize,
     learning_rate: BaseElement,
-    mut model: Model,
-    dataset: Dataset,
-) -> (Model, BaseElement, Proof) {
+    mut model: prover::Model,
+    dataset: prover::Dataset,
+) -> (prover::Model, BaseElement, Proof) {
     prove_work(num_epochs, learning_rate, model, dataset)
 }
 
 #[ic_cdk::update]
 fn verify(
-    initial_model: Model,
-    updated_model: Model,
+    initial_model: verifier::Model,
+    updated_model: verifier::Model,
     datahash: BaseElement,
     proof: Proof
 ) -> bool {

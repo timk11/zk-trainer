@@ -3,3 +3,4 @@ members = [
     "src/wrapper"
 ]
 resolver = "2"
+winterfell = "0.12.0"

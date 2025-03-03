@@ -1,6 +1,6 @@
 use winterfell::{
     crypto::{hashers::Blake3_256, DefaultRandomCoin},
-    math::fields::f128::BaseElement,
+    math::{fields::f128::BaseElement, FieldElement},
     verify,
     AcceptableOptions, AirContext, Proof,
 };
@@ -44,13 +44,13 @@ fn update_hash(
 
 pub(crate) fn verify_work(initial_model: Model, updated_model: Model, datahash: BaseElement, proof: Proof) -> bool {
     // Convert initial and updated models into hashes
-    let start = update_hash(BaseElement::ZERO, [
+    let start = update_hash(BaseElement::ZERO, &[
         initial_model.weights_input_hidden.clone(),
         initial_model.weights_hidden_output.clone(),
         initial_model.bias_hidden.clone(),
         vec![initial_model.bias_output]
     ].concat());
-    let updated = update_hash(BaseElement::ZERO, [
+    let updated = update_hash(BaseElement::ZERO, &[
         initial_model.weights_input_hidden.clone(),
         initial_model.weights_hidden_output.clone(),
         initial_model.bias_hidden.clone(),
@@ -64,7 +64,7 @@ pub(crate) fn verify_work(initial_model: Model, updated_model: Model, datahash: 
     // The number of steps and options are encoded in the proof itself, so we don't need to
     // pass them explicitly to the verifier.
     let pub_inputs = PublicInputs { start, updated, datahash };
-    let outcome: bool = match verify::<WorkAir, Blake3, DefaultRandomCoin<Blake3>>(proof, pub_inputs, &min_opts) {
+    let outcome: bool = match verify::<WorkAir, Blake3, DefaultRandomCoin<Blake3>, VC>(proof, pub_inputs, &min_opts) {
         Ok(_) => true,
         Err(_) => false,
     };
