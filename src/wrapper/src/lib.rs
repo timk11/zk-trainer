@@ -1,31 +1,48 @@
 use winterfell::{
-    math::fields::f128::BaseElement,
+    math::{fields::f128::BaseElement, FieldElement, StarkField},
     Proof,
 };
-use sha2::Sha256;
+use winter_utils::DeserializationError;
+use sha2::{Sha256, Digest};
+use serde::{Deserialize, Serialize};
+use candid::CandidType;
 
 mod prover;
 mod verifier;
 
-use crate::prover::prove_work;
+use crate::prover::{Model, Dataset, sigmoid_approx, prove_work};
 use crate::verifier::verify_work;
 
-struct Model {
-    pub weights_input_hidden: Vec<BaseElement>,
-    pub weights_hidden_output: Vec<BaseElement>,
-    pub bias_hidden: Vec<BaseElement>,
-    pub bias_output: BaseElement,
+/// Wrapped BaseElement for serialisation
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug)]
+pub struct WrappedBaseElement(pub u128);
+
+impl WrappedBaseElement {
+    pub fn wrap(element: BaseElement) -> Self {
+        WrappedBaseElement(element.as_int())
+    }
+
+    pub fn unwrap(self) -> BaseElement {
+        BaseElement::new(self.0)
+    }
 }
 
-struct Dataset {
-    pub input_matrix: Vec<Vec<BaseElement>>, // Each row is an input vector
-    pub expected_output: Vec<BaseElement>,
+/// Wrapped Proof for serialisation
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug)]
+pub struct WrappedProof {
+    pub proof_data: Vec<u8>, // Store proof as bytes
 }
 
-struct PublicInputs {
-    start: BaseElement,         // hash of initial weights and biases
-    updated: BaseElement,       // hash of final weights and biases
-    datahash: BaseElement,      // hash of dataset
+impl WrappedProof {
+    pub fn wrap(proof: Proof) -> Self {
+        WrappedProof {
+            proof_data: proof.to_bytes(),
+        }
+    }
+
+    pub fn unwrap(self) -> Result<Proof, DeserializationError> {
+        winterfell::Proof::from_bytes(&self.proof_data)
+    }
 }
 
 #[ic_cdk::update]
@@ -39,7 +56,7 @@ fn initialise_model(
         hasher.update(seed);
         let hash_bytes = hasher.finalize();
         let num = u64::from_le_bytes(hash_bytes[..8].try_into().unwrap());
-        BaseElement::from(num) // Convert to BaseElement
+        BaseElement::from(num % 20_000 - 10_000) // Convert to BaseElement
     }
 
     let weights_input_hidden = (0..(len_sample * hidden_size))
@@ -50,11 +67,9 @@ fn initialise_model(
         .map(|i| deterministic_value(&i.to_le_bytes()))
         .collect();
 
-    let bias_hidden = (0..hidden_size)
-        .map(|i| deterministic_value(&i.to_le_bytes()))
-        .collect();
+    let bias_hidden = vec![BaseElement::ZERO; hidden_size];
 
-    let bias_output = deterministic_value(&[0u8]);
+    let bias_output = BaseElement::ZERO;
 
     Model {
         weights_input_hidden,
@@ -67,41 +82,36 @@ fn initialise_model(
 #[ic_cdk::query]
 fn train_and_prove(
     num_epochs: usize,
-    learning_rate: BaseElement,
-    mut model: prover::Model,
-    dataset: prover::Dataset,
-) -> (prover::Model, BaseElement, Proof) {
-    prove_work(num_epochs, learning_rate, model, dataset)
+    learning_rate: WrappedBaseElement,
+    model: Model,
+    dataset: Dataset,
+) -> (Model, WrappedBaseElement, WrappedProof) {
+    let (updated_model, dataset_hash, proof) =
+        prove_work(num_epochs, learning_rate.unwrap(), model, dataset);
+    (updated_model, WrappedBaseElement::wrap(dataset_hash), WrappedProof::wrap(proof))
 }
 
 #[ic_cdk::update]
 fn verify(
-    initial_model: verifier::Model,
-    updated_model: verifier::Model,
-    datahash: BaseElement,
-    proof: Proof
+    initial_model: Model,
+    updated_model: Model,
+    datahash: WrappedBaseElement,
+    proof: WrappedProof
 ) -> bool {
-    verify_work(initial_model, updated_model, datahash, proof)
-}
-
-// Taylor series approximation of sigmoid: sigmoid(x) ≈ 0.5 + x/4 - x^3/48
-fn sigmoid_approx(x: BaseElement) -> BaseElement {
-    let x2 = x * x;
-    let x3 = x2 * x;
-    BaseElement::from(0.5) + x / BaseElement::from(4.0) - x3 / BaseElement::from(48.0)
+    verify_work(initial_model, updated_model, datahash.unwrap(), proof.unwrap().expect("_"))
 }
 
 #[ic_cdk::update]
-fn predict(model: &Model, input: &[BaseElement]) -> BaseElement {
+fn predict(model: Model, input: Vec<WrappedBaseElement>) -> WrappedBaseElement {
     let len_sample = input.len();
     let hidden_size = model.bias_hidden.len();
 
     // Calculate hidden layer activations
-    let mut hidden_activations = vec![BaseElement::from(0.0); hidden_size];
+    let mut hidden_activations = vec![BaseElement::ZERO; hidden_size];
     for h in 0..hidden_size {
         let mut sum = model.bias_hidden[h];
         for i in 0..len_sample {
-            sum += input[i] * model.weights_input_hidden[h * len_sample + i];
+            sum += input[i].unwrap() * model.weights_input_hidden[h * len_sample + i];
         }
         hidden_activations[h] = sigmoid_approx(sum);
     }
@@ -112,7 +122,7 @@ fn predict(model: &Model, input: &[BaseElement]) -> BaseElement {
         output_sum += hidden_activations[h] * model.weights_hidden_output[h];
     }
 
-    sigmoid_approx(output_sum) // Final output
+    WrappedBaseElement::wrap(sigmoid_approx(output_sum)) // Final output
 }
 
 ic_cdk::export_candid!();

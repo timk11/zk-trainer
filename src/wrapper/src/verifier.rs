@@ -1,31 +1,19 @@
 use winterfell::{
     crypto::{hashers::Blake3_256, DefaultRandomCoin},
-    math::{fields::f128::BaseElement, FieldElement},
+    math::{fields::f128::BaseElement, FieldElement, StarkField},
     verify,
     AcceptableOptions, AirContext, Proof,
 };
 use sha2::{Sha256, Digest};
 use std::convert::TryInto;
+use crate::prover::{Model, WorkAir, WorkProver};
 
 type Blake3 = Blake3_256<BaseElement>;
-
-pub struct Model {
-    pub weights_input_hidden: Vec<BaseElement>,
-    pub weights_hidden_output: Vec<BaseElement>,
-    pub bias_hidden: Vec<BaseElement>,
-    pub bias_output: BaseElement,
-}
 
 pub struct PublicInputs {
     start: BaseElement,         // hash of initial weights and biases
     updated: BaseElement,       // hash of final weights and biases
     datahash: BaseElement,      // hash of dataset
-}
-
-pub struct WorkAir {
-    context: AirContext<BaseElement>,
-    start: BaseElement,
-    result: Vec<BaseElement>,
 }
 
 fn update_hash(
@@ -42,7 +30,7 @@ fn update_hash(
     BaseElement::from(hash_value)
 }
 
-pub(crate) fn verify_work(initial_model: Model, updated_model: Model, datahash: BaseElement, proof: Proof) -> bool {
+pub(crate) fn verify_work<VC>(initial_model: Model, updated_model: Model, datahash: BaseElement, proof: Proof) -> bool {
     // Convert initial and updated models into hashes
     let start = update_hash(BaseElement::ZERO, &[
         initial_model.weights_input_hidden.clone(),

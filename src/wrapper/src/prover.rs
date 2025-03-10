@@ -1,6 +1,6 @@
 use winterfell::{
-    crypto::{hashers::Blake3_256, DefaultRandomCoin},
-    math::{fields::f128::BaseElement, FieldElement, ToElements},
+    crypto::{hashers::Blake3_256, DefaultRandomCoin, MerkleTree},
+    math::{fields::f128::BaseElement, FieldElement, StarkField, ToElements},
     matrix::ColMatrix,
     Air, AirContext, Assertion, AuxRandElements, BatchingMethod,
     CompositionPoly, CompositionPolyTrace,
@@ -12,10 +12,13 @@ use winterfell::{
 };
 use sha2::{Sha256, Digest};
 use std::convert::TryInto;
+use serde::Deserialize;
+use candid::CandidType;
 
 
 // TRACE
 
+#[derive(Deserialize, CandidType)]
 pub struct Model {
     pub weights_input_hidden: Vec<BaseElement>,
     pub weights_hidden_output: Vec<BaseElement>,
@@ -23,14 +26,18 @@ pub struct Model {
     pub bias_output: BaseElement,
 }
 
+#[derive(Deserialize, CandidType)]
 pub struct Dataset {
     pub input_matrix: Vec<Vec<BaseElement>>, // Each row is an input vector
     pub expected_output: Vec<BaseElement>,
 }
 
-// A simple sigmoid approximation using Taylor series
-fn sigmoid_approx(x: BaseElement) -> BaseElement {
-    BaseElement::new(0.5) + BaseElement::new(0.25) * x - (x.exp(3) / BaseElement::new(48.0))
+pub const E4: BaseElement = BaseElement::new(10_000);
+const E8: BaseElement = BaseElement::new(100_000_000);
+
+// Taylor series approximation of sigmoid: sigmoid(x) ≈ 0.5 + x/4 - x^3/48
+pub fn sigmoid_approx(x: BaseElement) -> BaseElement {
+    BaseElement::new(5000) + x / BaseElement::new(4) - (x.exp(3) / BaseElement::new(4_800_000_000))
 }
 
 fn is_power_of_2(n: usize) -> bool {
@@ -48,7 +55,7 @@ fn update_hash(
     }
     let hash_bytes = hasher.finalize();
     let hash_value = u64::from_le_bytes(hash_bytes[..8].try_into().unwrap());
-    BaseElement::from(hash_value)
+    BaseElement::new(hash_value.into())
 }
 
 fn generate_nn_trace(
@@ -93,7 +100,7 @@ fn generate_nn_trace(
                 model.bias_hidden.clone(),
                 vec![model.bias_output]
             ].concat());
-            dataset_hash = update_hash(dataset_hash, [input, &vec![expected]].concat());
+            dataset_hash = update_hash(dataset_hash, [&input, &vec![expected]][..].concat());
             let mut hidden_activations = vec![BaseElement::ZERO; hidden_size];
             let mut hidden_errors = vec![BaseElement::ZERO; hidden_size];
             let mut hidden_gradients = vec![BaseElement::ZERO; hidden_size];
@@ -102,21 +109,21 @@ fn generate_nn_trace(
             for j in 0..hidden_size {
                 let mut activation = model.bias_hidden[j];
                 for i in 0..input.len() {
-                    activation += input[i] * model.weights_input_hidden[j];
+                    activation += input[i] * model.weights_input_hidden[j] / E4;
                 }
-                hidden_activations[j] = activation * (BaseElement::new(0.5) + BaseElement::new(0.25) * activation - (activation.exp(3) / BaseElement::new(48.0)));
-                output += hidden_activations[j] * model.weights_hidden_output[j];
+                hidden_activations[j] = sigmoid_approx(activation);
+                output += hidden_activations[j] * model.weights_hidden_output[j] / E4;
             }
 
             let error = output - expected;
             for j in 0..hidden_size {
                 hidden_errors[j] = error;
-                hidden_gradients[j] = error * hidden_activations[j] * (BaseElement::ONE() - hidden_activations[j]);
-                model.weights_input_hidden[j] += learning_rate * hidden_gradients[j];
-                model.weights_hidden_output[j] += learning_rate * hidden_gradients[j];
-                model.bias_hidden[j] += learning_rate * hidden_gradients[j];
+                hidden_gradients[j] = error * hidden_activations[j] * (E4 - hidden_activations[j]) / E8;
+                model.weights_input_hidden[j] += learning_rate * hidden_gradients[j] / E4;
+                model.weights_hidden_output[j] += learning_rate * hidden_gradients[j] / E4;
+                model.bias_hidden[j] += learning_rate * hidden_gradients[j] / E4;
             }
-            model.bias_output += learning_rate * error;
+            model.bias_output += learning_rate * error / E4;
 
         }
 
@@ -213,14 +220,14 @@ impl Air for WorkAir {
         // evaluate to zero if and only if the expected and actual states are the same.
 
         let current_state = frame.current();
-        let flag = current_state[0];
-        let len_sample = current_state[1];
-        let hidden_size = current_state[2];
+        let flag = current_state[0].as_int();
+        let len_sample = current_state[1].as_int();
+        let hidden_size = current_state[2].as_int();
         let learning_rate = current_state[3];
         let mut dataset_hash =  current_state[4]; // Current dataset hash
-        let mut w_b_hash =  current_state.get[5]; // Hash of weights and biases
+        let mut w_b_hash =  current_state[5]; // Hash of weights and biases
         let input = current_state.get(6..(6 + len_sample)); // Input feature
-        let expected =  current_state.get[6 + len_sample]; // Expected output
+        let expected =  current_state[6 + len_sample]; // Expected output
         let mut weights_ih = current_state.get((7 + len_sample)..(7 + len_sample + len_sample * hidden_size)); // Weight from input to hidden layer
         let mut weights_ho = current_state.get((7 + len_sample + len_sample * hidden_size)..(7 + len_sample + len_sample * hidden_size + hidden_size)); // Bias for hidden layer
         let mut biases_h = current_state.get((7 + len_sample + len_sample * hidden_size + hidden_size)..(7 + len_sample + len_sample * hidden_size + 2 * hidden_size)); // Weight from hidden to output layer
@@ -231,34 +238,34 @@ impl Air for WorkAir {
         let mut hidden_gradients = vec![BaseElement::ZERO; hidden_size];
         let mut output = bias_o;
 
-        if flag == 1 { dataset_hash = BaseElement::ZERO; };
-        dataset_hash = update_hash(dataset_hash, [input, vec![expected]].concat());
+        if flag == 1 { dataset_hash = BaseElement::ZERO.into(); };
+        dataset_hash = update_hash(dataset_hash, [&input[..], &vec![expected][..]].concat()).into();
 
         if flag == 0 {
             for j in 0..hidden_size {
-                let mut activation = biases_h[j];
+                let mut activation = biases_h.unwrap()[j];
                 for i in 0..len_sample {
-                    activation += input[i] * weights_ih[j];
+                    activation += input.unwrap()[i] * weights_ih.unwrap()[j] / E4;
                 }
-                hidden_activations[j] = activation * (BaseElement::new(0.5) + BaseElement::new(0.25) * activation - (activation.pow(3) / BaseElement::new(48.0)));
-                output += hidden_activations[j] * weights_ho[j];
+                hidden_activations[j] = sigmoid_approx(activation);
+                output += hidden_activations[j] * weights_ho.unwrap()[j] / E4;
             }
 
             let error = output - expected;
             for j in 0..hidden_size {
                 hidden_errors[j] = error;
-                hidden_gradients[j] = error * hidden_activations[j] * (BaseElement::ONE - hidden_activations[j]);
-                weights_ih[j] += learning_rate * hidden_gradients[j];
-                weights_ho[j] += learning_rate * hidden_gradients[j];
-                biases_h[j] += learning_rate * hidden_gradients[j];
+                hidden_gradients[j] = error * hidden_activations[j] * (E4 - hidden_activations[j]) / E8;
+                weights_ih[j] += learning_rate * hidden_gradients[j].into() / E4.into();
+                weights_ho[j] += learning_rate * hidden_gradients[j].into() / E4.into();
+                biases_h[j] += learning_rate * hidden_gradients[j].into() / E4.into();
             };
-            bias_o += learning_rate * error;
-            w_b_hash = update_hash(w_b_hash, [
+            bias_o += learning_rate * error.into() / E4.into();
+            w_b_hash = update_hash(w_b_hash.into(), [
                 weights_ih.clone(),
                 weights_ho.clone(),
                 biases_h.clone(),
                 vec![bias_o]
-            ].concat());
+            ].concat()).into();
         };
 
         let next_state = [
@@ -300,7 +307,7 @@ type Blake3 = Blake3_256<BaseElement>;
 
 // Our prover needs to hold STARK protocol parameters which are specified via ProofOptions
 // struct.
-struct WorkProver {
+pub struct WorkProver {
     options: ProofOptions,
 }
 
@@ -320,8 +327,8 @@ impl Prover for WorkProver {
     type Trace = TraceTable<BaseElement>;
     type HashFn = Blake3;
     type RandomCoin = DefaultRandomCoin<Blake3>;
-    type VC = Blake3_256<HashFn>;
-    type TraceLde<E: FieldElement<BaseField = BaseElement>> = DefaultTraceLde<E, Blake3>;
+    type VC = MerkleTree<Self::HashFn>;
+    type TraceLde<E: FieldElement<BaseField = BaseElement>> = DefaultTraceLde<E, Blake3, Self::VC>;
     type ConstraintEvaluator<'a, E: FieldElement<BaseField = BaseElement>> =
         DefaultConstraintEvaluator<'a, WorkAir, E>;
     type ConstraintCommitment<E: FieldElement<BaseField = Self::BaseField>> =
@@ -352,7 +359,7 @@ impl Prover for WorkProver {
     fn new_evaluator<'a, E: FieldElement<BaseField = BaseElement>>(
         &self,
         air: &'a WorkAir,
-        aux_rand_elements: Option<Self::AuxRandElements<E>>,
+        aux_rand_elements: Option<AuxRandElements<E>>,
         composition_coefficients: winterfell::ConstraintCompositionCoefficients<E>,
     ) -> Self::ConstraintEvaluator<'a, E> {
         DefaultConstraintEvaluator::new(air, aux_rand_elements, composition_coefficients)
@@ -390,7 +397,7 @@ pub(crate) fn prove_work(
     let len_sample = dataset.input_matrix[0].len();
     let hidden_size = model.weights_input_hidden.len();
     let num_columns = (len_sample + 2) * (hidden_size + 1) + 5;
-    let mut final_row = vec![0; num_columns];
+    let mut final_row = vec![BaseElement::ZERO; num_columns];
     trace.read_row_into(n - 1, final_row);
     //let final_row = &trace[n - 1];
     let len_sample = dataset.input_matrix[0].len();

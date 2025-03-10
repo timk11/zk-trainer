@@ -865,5 +865,6 @@ dependencies = [
  "ic-cdk-timers",
  "serde",
  "sha2",
+ "winter-utils",
  "winterfell",
 ]
