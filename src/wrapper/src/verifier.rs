@@ -1,20 +1,15 @@
 use winterfell::{
-    crypto::{hashers::Blake3_256, DefaultRandomCoin},
+    crypto::{hashers::Blake3_256, DefaultRandomCoin, MerkleTree},
     math::{fields::f128::BaseElement, FieldElement, StarkField},
     verify,
     AcceptableOptions, AirContext, Proof,
 };
 use sha2::{Sha256, Digest};
 use std::convert::TryInto;
-use crate::prover::{Model, WorkAir, WorkProver};
+use crate::prover::{Model, PublicInputs, WorkAir, WorkProver, WrappedBaseElement};
 
 type Blake3 = Blake3_256<BaseElement>;
-
-pub struct PublicInputs {
-    start: BaseElement,         // hash of initial weights and biases
-    updated: BaseElement,       // hash of final weights and biases
-    datahash: BaseElement,      // hash of dataset
-}
+type VC = MerkleTree<Blake3>;
 
 fn update_hash(
     current_hash: BaseElement,
@@ -30,19 +25,19 @@ fn update_hash(
     BaseElement::from(hash_value)
 }
 
-pub(crate) fn verify_work<VC>(initial_model: Model, updated_model: Model, datahash: BaseElement, proof: Proof) -> bool {
+pub(crate) fn verify_work(initial_model: Model, updated_model: Model, datahash: BaseElement, proof: Proof) -> bool {
     // Convert initial and updated models into hashes
     let start = update_hash(BaseElement::ZERO, &[
-        initial_model.weights_input_hidden.clone(),
-        initial_model.weights_hidden_output.clone(),
-        initial_model.bias_hidden.clone(),
-        vec![initial_model.bias_output]
+        WrappedBaseElement::unwrap_vec(&initial_model.weights_input_hidden),
+        WrappedBaseElement::unwrap_vec(&initial_model.weights_hidden_output),
+        WrappedBaseElement::unwrap_vec(&initial_model.bias_hidden),
+        vec![initial_model.bias_output.unwrap()]
     ].concat());
     let updated = update_hash(BaseElement::ZERO, &[
-        initial_model.weights_input_hidden.clone(),
-        initial_model.weights_hidden_output.clone(),
-        initial_model.bias_hidden.clone(),
-        vec![initial_model.bias_output]
+        WrappedBaseElement::unwrap_vec(&updated_model.weights_input_hidden),
+        WrappedBaseElement::unwrap_vec(&updated_model.weights_hidden_output),
+        WrappedBaseElement::unwrap_vec(&updated_model.bias_hidden),
+        vec![updated_model.bias_output.unwrap()]
     ].concat());
 
     // The verifier will accept proofs with parameters which guarantee 95 bits or more of

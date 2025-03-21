@@ -1,4 +1,5 @@
 use winterfell::{
+    crypto::{hashers::Blake3_256, DefaultRandomCoin, MerkleTree},
     math::{fields::f128::BaseElement, FieldElement, StarkField},
     Proof,
 };
@@ -10,24 +11,10 @@ use candid::CandidType;
 mod prover;
 mod verifier;
 
-use crate::prover::{Model, Dataset, sigmoid_approx, prove_work};
+use crate::prover::{WrappedBaseElement, Model, Dataset, sigmoid_approx, prove_work};
 use crate::verifier::verify_work;
 
-/// Wrapped BaseElement for serialisation
-#[derive(CandidType, Serialize, Deserialize, Clone, Debug)]
-pub struct WrappedBaseElement(pub u128);
-
-impl WrappedBaseElement {
-    pub fn wrap(element: BaseElement) -> Self {
-        WrappedBaseElement(element.as_int())
-    }
-
-    pub fn unwrap(self) -> BaseElement {
-        BaseElement::new(self.0)
-    }
-}
-
-/// Wrapped Proof for serialisation
+// Wrapped Proof for serialisation
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug)]
 pub struct WrappedProof {
     pub proof_data: Vec<u8>, // Store proof as bytes
@@ -71,11 +58,16 @@ fn initialise_model(
 
     let bias_output = BaseElement::ZERO;
 
+    let wrapped_weights_input_hidden = WrappedBaseElement::wrap_vec(weights_input_hidden);
+    let wrapped_weights_hidden_output = WrappedBaseElement::wrap_vec(weights_hidden_output);
+    let wrapped_bias_hidden = WrappedBaseElement::wrap_vec(bias_hidden);
+    let wrapped_bias_output = WrappedBaseElement::wrap(bias_output);
+    
     Model {
-        weights_input_hidden,
-        weights_hidden_output,
-        bias_hidden,
-        bias_output,
+        weights_input_hidden: wrapped_weights_input_hidden,
+        weights_hidden_output: wrapped_weights_hidden_output,
+        bias_hidden: wrapped_bias_hidden,
+        bias_output: wrapped_bias_output,
     }
 }
 
@@ -109,17 +101,17 @@ fn predict(model: Model, input: Vec<WrappedBaseElement>) -> WrappedBaseElement {
     // Calculate hidden layer activations
     let mut hidden_activations = vec![BaseElement::ZERO; hidden_size];
     for h in 0..hidden_size {
-        let mut sum = model.bias_hidden[h];
+        let mut sum = WrappedBaseElement::unwrap_vec(&model.bias_hidden)[h];
         for i in 0..len_sample {
-            sum += input[i].unwrap() * model.weights_input_hidden[h * len_sample + i];
+            sum += input[i].unwrap() * WrappedBaseElement::unwrap_vec(&model.weights_input_hidden)[h * len_sample + i];
         }
         hidden_activations[h] = sigmoid_approx(sum);
     }
 
     // Calculate output
-    let mut output_sum = model.bias_output;
+    let mut output_sum = model.bias_output.unwrap();
     for h in 0..hidden_size {
-        output_sum += hidden_activations[h] * model.weights_hidden_output[h];
+        output_sum += hidden_activations[h] * WrappedBaseElement::unwrap_vec(&model.weights_hidden_output)[h];
     }
 
     WrappedBaseElement::wrap(sigmoid_approx(output_sum)) // Final output
