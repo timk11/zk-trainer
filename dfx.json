@@ -5,16 +5,9 @@
       "package": "wrapper",
       "type": "rust"
     },
-    "zk-trainer-backend": {
-      "main": "src/zk-trainer-backend/main.mo",
-      "type": "motoko",
-      "dependencies": [
-        "wrapper"
-      ]
-    },
     "zk-trainer-frontend": {
       "dependencies": [
-        "zk-trainer-backend"
+        "wrapper"
       ],
       "source": [
         "src/zk-trainer-frontend/dist"
