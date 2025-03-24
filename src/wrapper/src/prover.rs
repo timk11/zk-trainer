@@ -11,7 +11,7 @@ use winterfell::{
     TransitionConstraintDegree,
 };
 use sha2::{Sha256, Digest};
-use std::{convert::TryInto, ops::{Add, Mul}};
+use std::convert::TryInto;
 use serde::{Serialize, Deserialize};
 use candid::CandidType;
 
@@ -101,7 +101,7 @@ fn generate_nn_trace(
     let num_columns = (len_sample + 2) * (hidden_size + 1) + 5; // Includes flag, len_sample, hidden_size, learning_rate, sample, expected, hash, weights and biases
     assert!(num_columns <= 255, "Too many columns");
     let mut trace = TraceTable::new(num_columns, num_epochs * (num_samples + 1));
-    let mut dataset_hash = BaseElement::ZERO;
+    let mut dataset_hash: BaseElement;
     let mut w_b_hash = BaseElement::ZERO;
 
     for epoch in 0..num_epochs {
@@ -184,9 +184,9 @@ fn generate_nn_trace(
 // AIR
 // Public inputs for our computation will consist of the starting value and the end result.
 pub struct PublicInputs {
-    start: BaseElement,           // hash of initial weights and biases
-    updated: BaseElement,         // hash of final weights and biases
-    datahash: BaseElement,        // hash of dataset
+    pub start: BaseElement,           // hash of initial weights and biases
+    pub updated: BaseElement,         // hash of final weights and biases
+    pub datahash: BaseElement,        // hash of dataset
 }
 
 // We need to describe how public inputs can be converted to field elements.
@@ -261,9 +261,15 @@ impl Air for WorkAir {
         let mut w_b_hash = current_state[5]; // Hash of weights and biases
         let input = current_state.get(6..(6usize + len_sample)); // Input feature
         let expected = current_state[6usize + len_sample]; // Expected output
-        let mut weights_ih = current_state.get((7usize + len_sample)..(7usize + len_sample + len_sample * hidden_size)); // Weight from input to hidden layer
-        let mut weights_ho = current_state.get((7usize + len_sample + len_sample * hidden_size)..(7usize + len_sample + len_sample * hidden_size + hidden_size)); // Bias for hidden layer
-        let mut biases_h = current_state.get((7usize + len_sample + len_sample * hidden_size + hidden_size)..(7usize + len_sample + len_sample * hidden_size + 2usize * hidden_size)); // Weight from hidden to output layer
+        let mut weights_ih = current_state.get((7usize + len_sample)..(7usize + len_sample + len_sample * hidden_size))
+            .map(|slice| slice.iter().map(|&e| e.base_element(0)).collect::<Vec<_>>())
+            .unwrap_or_default(); // Weight from input to hidden layer
+        let mut weights_ho = current_state.get((7usize + len_sample + len_sample * hidden_size)..(7usize + len_sample + len_sample * hidden_size + hidden_size))
+            .map(|slice| slice.iter().map(|&e| e.base_element(0)).collect::<Vec<_>>())
+            .unwrap_or_default(); // Bias for hidden layer
+        let mut biases_h = current_state.get((7usize + len_sample + len_sample * hidden_size + hidden_size)..(7usize + len_sample + len_sample * hidden_size + 2usize * hidden_size))
+            .map(|slice| slice.iter().map(|&e| e.base_element(0)).collect::<Vec<_>>())
+            .unwrap_or_default(); // Weight from hidden to output layer
         let mut bias_o = current_state[7usize + len_sample + len_sample * hidden_size + 2usize * hidden_size]; // Bias for output layer
 
         let mut hidden_activations = vec![BaseElement::ZERO; hidden_size];
@@ -272,32 +278,38 @@ impl Air for WorkAir {
         let mut output = bias_o;
 
         if flag == 1 { dataset_hash = BaseElement::ZERO.into(); };
-        dataset_hash = update_hash(dataset_hash.into(), [&input.unwrap_or(&[]), &vec![expected][..]].concat()).into();
-
+        dataset_hash = update_hash(
+            dataset_hash.base_element(0),
+            &[
+                input.map(|slice| slice.iter().map(|&e| e.base_element(0)).collect::<Vec<_>>())
+                     .unwrap_or_default(),
+                vec![expected.base_element(0)],
+            ].concat(),
+        ).into();
         if flag == 0 {
             for j in 0..hidden_size {
-                let mut activation = biases_h.unwrap()[j];
+                let mut activation = biases_h[j];
                 for i in 0..len_sample {
-                    activation += input.unwrap()[i] * weights_ih.unwrap()[j] / E4.into();
+                    activation += (input.unwrap()[i] * weights_ih[j].into() / E4.into()).base_element(0);
                 }
-                hidden_activations[j] = sigmoid_approx(activation);
-                output += (hidden_activations[j] * weights_ho.unwrap()[j] / E4).into();
+                hidden_activations[j] = sigmoid_approx(activation.base_element(0));
+                output += (hidden_activations[j] * weights_ho[j].base_element(0) / E4).into();
             }
 
             let error = output - expected;
             for j in 0..hidden_size {
-                hidden_errors[j] = error;
-                hidden_gradients[j] = error * hidden_activations[j].into() * ((E4 - hidden_activations[j])).into() / E8.into();
-                weights_ih[j] += learning_rate * hidden_gradients[j].into() / E4.into();
-                weights_ho[j] += learning_rate * hidden_gradients[j].into() / E4.into();
-                biases_h[j] += learning_rate * hidden_gradients[j].into() / E4.into();
+                hidden_errors[j] = error.base_element(0);
+                hidden_gradients[j] = error.base_element(0) * hidden_activations[j] * ((E4 - hidden_activations[j])) / E8;
+                weights_ih[j] += (learning_rate * hidden_gradients[j].into() / E4.into()).base_element(0);
+                weights_ho[j] += (learning_rate * hidden_gradients[j].into() / E4.into()).base_element(0);
+                biases_h[j] += (learning_rate * hidden_gradients[j].into() / E4.into()).base_element(0);
             };
             bias_o += learning_rate * error.into() / E4.into();
-            w_b_hash = update_hash(w_b_hash.into(), [
+            w_b_hash = update_hash(w_b_hash.base_element(0), &[
                 weights_ih.clone(),
                 weights_ho.clone(),
                 biases_h.clone(),
-                vec![bias_o]
+                vec![bias_o.base_element(0)]
             ].concat()).into();
         };
 

@@ -2,11 +2,11 @@ use winterfell::{
     crypto::{hashers::Blake3_256, DefaultRandomCoin, MerkleTree},
     math::{fields::f128::BaseElement, FieldElement, StarkField},
     verify,
-    AcceptableOptions, AirContext, Proof,
+    AcceptableOptions, Proof,
 };
 use sha2::{Sha256, Digest};
 use std::convert::TryInto;
-use crate::prover::{Model, PublicInputs, WorkAir, WorkProver, WrappedBaseElement};
+use crate::prover::{Model, PublicInputs, WorkAir, WrappedBaseElement};
 
 type Blake3 = Blake3_256<BaseElement>;
 type VC = MerkleTree<Blake3>;

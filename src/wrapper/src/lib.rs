@@ -1,6 +1,5 @@
 use winterfell::{
-    crypto::{hashers::Blake3_256, DefaultRandomCoin, MerkleTree},
-    math::{fields::f128::BaseElement, FieldElement, StarkField},
+    math::{fields::f128::BaseElement, FieldElement},
     Proof,
 };
 use winter_utils::DeserializationError;
