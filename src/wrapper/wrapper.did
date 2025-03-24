@@ -1,4 +1,18 @@
-service : { 
-    exp : (nat, nat) -> (nat) query; 
-    square : (nat) -> (nat) query 
+type Dataset = record { expected_output : vec nat; input_matrix : vec vec nat };
+type Model = record {
+  weights_input_hidden : vec nat;
+  bias_output : nat;
+  bias_hidden : vec nat;
+  weights_hidden_output : vec nat;
+};
+type WrappedProof = record { proof_data : blob };
+service : {
+  initialise_model : (nat64, nat64) -> (Model);
+  predict : (Model, vec nat) -> (nat);
+  train_and_prove : (nat64, nat, Model, Dataset) -> (
+      Model,
+      nat,
+      WrappedProof,
+    ) query;
+  verify : (Model, Model, nat, WrappedProof) -> (bool);
 }

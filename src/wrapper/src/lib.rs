@@ -31,6 +31,8 @@ impl WrappedProof {
     }
 }
 
+const MODULUS: u128 = 340282366920938463463374557953744961537;
+
 #[ic_cdk::update]
 fn initialise_model(
     len_sample: usize,
@@ -42,7 +44,7 @@ fn initialise_model(
         hasher.update(seed);
         let hash_bytes = hasher.finalize();
         let num = u64::from_le_bytes(hash_bytes[..8].try_into().unwrap());
-        BaseElement::from(num % 20_000 - 10_000) // Convert to BaseElement
+        BaseElement::new(num as u128 % 20_000 + MODULUS - 10_000) // Convert to BaseElement
     }
 
     let weights_input_hidden = (0..(len_sample * hidden_size))
@@ -114,6 +116,20 @@ fn predict(model: Model, input: Vec<WrappedBaseElement>) -> WrappedBaseElement {
     }
 
     WrappedBaseElement::wrap(sigmoid_approx(output_sum)) // Final output
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn initialise_model_works() {
+        let model = initialise_model(
+            10, // sample length
+            9   // hidden layer size
+        );
+        assert_eq!(model.weights_input_hidden.len(), 10 * 9);
+    }
 }
 
 ic_cdk::export_candid!();
