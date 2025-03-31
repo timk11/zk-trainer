@@ -95,10 +95,11 @@ fn generate_nn_trace(
 ) -> TraceTable<BaseElement> {
     let num_samples = dataset.input_matrix.len();
     let len_sample = dataset.input_matrix[0].len();
-    let hidden_size = model.weights_input_hidden.len();
+    let hidden_size = model.weights_hidden_output.len();
     assert!(is_power_of_2(num_epochs), "Number of epochs must be a power of 2");
     assert!(is_power_of_2(num_samples + 1), "Number of samples + 1 must be a power of 2");
-    let num_columns = (len_sample + 2) * (hidden_size + 1) + 5; // Includes flag, len_sample, hidden_size, learning_rate, sample, expected, hash, weights and biases
+    let num_columns = (len_sample + 2) * (hidden_size + 1) + 6; // Includes flag, len_sample, hidden_size, learning_rate, sample, expected, dataset_hash, wb_hash, weights and biases
+    println!("num_samples: {num_samples}, len_sample: {len_sample}, hidden_size: {hidden_size}, num_columns: {num_columns}");
     assert!(num_columns <= 255, "Too many columns");
     let mut trace = TraceTable::new(num_columns, num_epochs * (num_samples + 1));
     let mut dataset_hash: BaseElement;
@@ -115,7 +116,7 @@ fn generate_nn_trace(
                 WrappedBaseElement::unwrap_vec(&model.bias_hidden),
                 vec![model.bias_output.clone().unwrap()]
             ].concat());
-            trace.update_row(epoch * num_samples + sample_idx, &[
+            trace.update_row(epoch * (num_samples + 1) + sample_idx, &[
                 vec![BaseElement::new(0)],
                 vec![BaseElement::new(len_sample.try_into().unwrap())],
                 vec![BaseElement::new(hidden_size.try_into().unwrap())],
@@ -138,31 +139,45 @@ fn generate_nn_trace(
             for j in 0..hidden_size {
                 let mut activation = WrappedBaseElement::unwrap_vec(&model.bias_hidden)[j];
                 for i in 0..input.len() {
-                    activation += input[i] * WrappedBaseElement::unwrap_vec(&model.weights_input_hidden)[j] / E4;
+                    activation += input[i] * WrappedBaseElement::unwrap_vec(&model.weights_input_hidden)[j * input.len() + i] / E4;
                 }
                 hidden_activations[j] = sigmoid_approx(activation);
                 output += hidden_activations[j] * WrappedBaseElement::unwrap_vec(&model.weights_hidden_output)[j] / E4;
             }
 
             let error = output - expected;
-            for j in 0..hidden_size {
-                hidden_errors[j] = error;
-                hidden_gradients[j] = error * hidden_activations[j] * (E4 - hidden_activations[j]) / E8;
-                let new_weights_input_hidden_j = WrappedBaseElement::unwrap_vec(&model.weights_input_hidden)[j] + learning_rate * hidden_gradients[j] / E4;
-                let new_weights_hidden_output_j = WrappedBaseElement::unwrap_vec(&model.weights_hidden_output)[j] + learning_rate * hidden_gradients[j] / E4;
-                let new_bias_hidden_j = WrappedBaseElement::unwrap_vec(&model.bias_hidden)[j] + learning_rate * hidden_gradients[j] / E4;
-                model.weights_input_hidden[j] = WrappedBaseElement::wrap(new_weights_input_hidden_j);
-                model.weights_hidden_output[j] = WrappedBaseElement::wrap(new_weights_hidden_output_j);
-                model.bias_hidden[j] = WrappedBaseElement::wrap(new_bias_hidden_j);
-            }
-            let new_bias_output = learning_rate * error / E4;
-            model.bias_output = WrappedBaseElement::wrap(new_bias_output);
+            let output_gradient = error * sigmoid_approx(output) * (E4 - sigmoid_approx(output)) / E8;
 
+            for j in 0..hidden_size {
+                hidden_errors[j] = output_gradient * WrappedBaseElement::unwrap_vec(&model.weights_hidden_output)[j] / E4;
+                hidden_gradients[j] = hidden_errors[j] * hidden_activations[j] * (E4 - hidden_activations[j]) / E8;
+
+                let new_weight_hidden_output = WrappedBaseElement::unwrap_vec(&model.weights_hidden_output)[j]
+                    + learning_rate * output_gradient * hidden_activations[j] / E8;
+                model.weights_hidden_output[j] = WrappedBaseElement::wrap(new_weight_hidden_output);
+
+                for i in 0..input.len() {
+                    let new_weight_input_hidden = WrappedBaseElement::unwrap_vec(&model.weights_input_hidden)[j * input.len() + i]
+                        + learning_rate * hidden_gradients[j] * input[i] / E8;
+                    model.weights_input_hidden[j * input.len() + i] = WrappedBaseElement::wrap(new_weight_input_hidden);
+                }
+
+                let new_bias_hidden = WrappedBaseElement::unwrap_vec(&model.bias_hidden)[j] + learning_rate * hidden_gradients[j] / E4;
+                model.bias_hidden[j] = WrappedBaseElement::wrap(new_bias_hidden);
+            }
+            let new_bias_output = WrappedBaseElement::unwrap(model.bias_output) + learning_rate * output_gradient / E4;
+            model.bias_output = WrappedBaseElement::wrap(new_bias_output);
         }
 
         // Append separator row (n+1) with zero sample data
         let zero_sample = vec![BaseElement::ZERO; dataset.input_matrix[0].len()];
-        trace.update_row((epoch + 1) * num_samples - 1, &[
+        w_b_hash = update_hash(w_b_hash, &[
+            WrappedBaseElement::unwrap_vec(&model.weights_input_hidden),
+            WrappedBaseElement::unwrap_vec(&model.weights_hidden_output),
+            WrappedBaseElement::unwrap_vec(&model.bias_hidden),
+            vec![model.bias_output.clone().unwrap()]
+        ].concat());
+        trace.update_row((epoch + 1) * (num_samples + 1) - 1, &[
             vec![BaseElement::new(1)],
             vec![BaseElement::new(len_sample.try_into().unwrap())],
             vec![BaseElement::new(hidden_size.try_into().unwrap())],
@@ -220,7 +235,7 @@ impl Air for WorkAir {
         // Our computation requires a single transition constraint. The constraint itself
         // is defined in the evaluate_transition() method below, but here we need to specify
         // the expected degree of the constraint.
-        let degrees = vec![TransitionConstraintDegree::new(2)];
+        let degrees = vec![TransitionConstraintDegree::new(3)];
 
         // We also need to specify the exact number of assertions we will place against the
         // execution trace. This number must be the same as the number of items in a vector
@@ -277,50 +292,56 @@ impl Air for WorkAir {
         let mut hidden_gradients = vec![BaseElement::ZERO; hidden_size];
         let mut output = bias_o;
 
-        if flag == 1 { dataset_hash = BaseElement::ZERO.into(); };
-        dataset_hash = update_hash(
-            dataset_hash.base_element(0),
-            &[
-                input.map(|slice| slice.iter().map(|&e| e.base_element(0)).collect::<Vec<_>>())
-                     .unwrap_or_default(),
-                vec![expected.base_element(0)],
-            ].concat(),
-        ).into();
+        if flag == 1 {
+            dataset_hash = BaseElement::ZERO.into();
+        } else {
+            dataset_hash = update_hash(
+                dataset_hash.base_element(0),
+                &[
+                    input.map(|slice| slice.iter().map(|&e| e.base_element(0)).collect::<Vec<_>>())
+                        .unwrap_or_default(),
+                    vec![expected.base_element(0)],
+                ].concat(),
+            ).into();
+        };
+
         if flag == 0 {
             for j in 0..hidden_size {
                 let mut activation = biases_h[j];
                 for i in 0..len_sample {
-                    activation += (input.unwrap()[i] * weights_ih[j].into() / E4.into()).base_element(0);
+                    activation += (input.unwrap()[i] * weights_ih[j * len_sample + i].into() / E4.into()).base_element(0);
                 }
                 hidden_activations[j] = sigmoid_approx(activation.base_element(0));
                 output += (hidden_activations[j] * weights_ho[j].base_element(0) / E4).into();
             }
 
             let error = output - expected;
+            let output_gradient = error.base_element(0) * sigmoid_approx(output.base_element(0)) * (E4 - sigmoid_approx(output.base_element(0))) / E8;
             for j in 0..hidden_size {
-                hidden_errors[j] = error.base_element(0);
-                hidden_gradients[j] = error.base_element(0) * hidden_activations[j] * ((E4 - hidden_activations[j])) / E8;
-                weights_ih[j] += (learning_rate * hidden_gradients[j].into() / E4.into()).base_element(0);
-                weights_ho[j] += (learning_rate * hidden_gradients[j].into() / E4.into()).base_element(0);
+                hidden_errors[j] = output_gradient * weights_ho[j].base_element(0) / E4;
+                hidden_gradients[j] = hidden_errors[j] * hidden_activations[j] * (E4 - hidden_activations[j]) / E8;
+
+                weights_ho[j] += (learning_rate * output_gradient.into() * hidden_activations[j].into() / E8.into()).base_element(0);
+
+                for i in 0..len_sample {
+                    weights_ih[j * len_sample + i] += (learning_rate * hidden_gradients[j].into() * input.unwrap()[i] / E8.into()).base_element(0);
+                }
+
                 biases_h[j] += (learning_rate * hidden_gradients[j].into() / E4.into()).base_element(0);
             };
-            bias_o += learning_rate * error.into() / E4.into();
-            w_b_hash = update_hash(w_b_hash.base_element(0), &[
-                weights_ih.clone(),
-                weights_ho.clone(),
-                biases_h.clone(),
-                vec![bias_o.base_element(0)]
-            ].concat()).into();
+            bias_o += learning_rate * output_gradient.into() / E4.into();
         };
+        
+        w_b_hash = update_hash(w_b_hash.base_element(0), &[
+            weights_ih.clone(),
+            weights_ho.clone(),
+            biases_h.clone(),
+            vec![bias_o.base_element(0)]
+        ].concat()).into();
 
-        let next_state = [
-            vec![dataset_hash], // Current dataset hash (previous row)
-            vec![w_b_hash] // Hash of weights and bias (current row)
-        ].concat();
-
-        for i in 0..2 {
-            result[i] = frame.next()[i + 4] - next_state[i];
-        };
+        result[0] = (frame.next()[4] - dataset_hash) + (frame.next()[5] - w_b_hash);
+        // TODO - Remove printing when debugging is complete
+        println!("flag: {}, frame.next()[4]: {}, dataset_hash: {}, frame.next()[5]: {}, w_b_hash: {}, frame.next()[-1]: {}, bias_o: {}, result: {}", flag, frame.next()[4], dataset_hash, frame.next()[5], w_b_hash, frame.next()[7usize + len_sample + len_sample * hidden_size + 2usize * hidden_size], bias_o, result[0]);
     }
 
 
