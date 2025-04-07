@@ -1,5 +1,5 @@
 use winterfell::{
-    math::{fields::f128::BaseElement, FieldElement},
+    math::{fields::f64::BaseElement, FieldElement},
     Proof,
 };
 use winter_utils::DeserializationError;
@@ -31,7 +31,7 @@ impl WrappedProof {
     }
 }
 
-const MODULUS: u128 = 340282366920938463463374557953744961537;
+const MODULUS: u64 = 18446744069414584321;
 
 #[ic_cdk::update]
 fn initialise_model(
@@ -44,7 +44,7 @@ fn initialise_model(
         hasher.update(seed);
         let hash_bytes = hasher.finalize();
         let num = u64::from_le_bytes(hash_bytes[..8].try_into().unwrap());
-        BaseElement::new(num as u128 % 20_000 + MODULUS - 10_000) // Convert to BaseElement
+        BaseElement::new(num as u64 % 20_000 + MODULUS - 10_000) // Convert to BaseElement
     }
 
     let weights_input_hidden = (0..(len_sample * hidden_size))
@@ -144,7 +144,7 @@ fn convert_dataset(
             .iter()
             .map(|&x| {
                 let standardised_value = (((x as f64 - min) / range) * (new_max - new_min) + new_min)
-                    .round() as u128;
+                    .round() as u64;
                 WrappedBaseElement::wrap(BaseElement::new(standardised_value))
             })
             .collect();
@@ -162,7 +162,7 @@ fn convert_dataset(
         .iter()
         .map(|&x| {
             let standardised_value = (((x as f64 - min) / range) * (new_max - new_min) + new_min)
-                .round() as u128;
+                .round() as u64;
             WrappedBaseElement::wrap(BaseElement::new(standardised_value))
         })
         .collect();
@@ -180,6 +180,7 @@ fn convert_dataset(
 mod tests {
     use super::*;
 
+    // Dataset modified from https://www.kaggle.com/datasets/lainguyn123/student-performance-factors
     /*
     let sample_data: Vec<Vec<i128>> = vec![
         vec![23, 84, 0, 7, 73, 1, 0, 3],
