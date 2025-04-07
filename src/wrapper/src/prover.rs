@@ -1,6 +1,7 @@
 use winterfell::{
-    crypto::{hashers::Blake3_256, DefaultRandomCoin, MerkleTree},
-    math::{fields::f128::BaseElement, FieldElement, StarkField, ToElements},
+    crypto::{hashers::{Blake3_256, Rp64_256},
+        DefaultRandomCoin, ElementHasher, Hasher, MerkleTree},
+    math::{fields::f64::BaseElement, FieldElement, StarkField, ToElements},
     matrix::ColMatrix,
     Air, AirContext, Assertion, AuxRandElements, BatchingMethod,
     CompositionPoly, CompositionPolyTrace,
@@ -10,7 +11,7 @@ use winterfell::{
     Trace, TraceInfo, TraceTable, TracePolyTable,
     TransitionConstraintDegree,
 };
-use sha2::{Sha256, Digest};
+//use sha2::{Sha256, Digest};
 use std::convert::TryInto;
 use serde::{Serialize, Deserialize};
 use candid::CandidType;
@@ -21,7 +22,7 @@ use candid::CandidType;
 
 // Wrapped BaseElement for serialisation
 #[derive(CandidType, Serialize, Deserialize, Clone, Copy, Debug)]
-pub struct WrappedBaseElement(pub u128);
+pub struct WrappedBaseElement(pub u64);
 
 impl WrappedBaseElement {
     pub fn wrap(element: BaseElement) -> Self {
@@ -77,14 +78,10 @@ fn update_hash(
     current_hash: BaseElement,
     inputs: &[BaseElement],
 ) -> BaseElement {
-    let mut hasher = Sha256::new();
-    hasher.update(current_hash.as_int().to_le_bytes());
-    for value in inputs.iter() {
-        hasher.update(value.as_int().to_le_bytes());
-    }
-    let hash_bytes = hasher.finalize();
-    let hash_value = u64::from_le_bytes(hash_bytes[..8].try_into().unwrap());
-    BaseElement::new(hash_value.into())
+    let hash_result = Rp64_256::hash_elements(
+        &[current_hash].iter().chain(inputs.iter()).cloned().collect::<Vec<_>>()
+    );
+    hash_result.as_elements()[0] // Extracting the first field element from the hash digest
 }
 
 fn generate_nn_trace(
@@ -235,7 +232,10 @@ impl Air for WorkAir {
         // Our computation requires a single transition constraint. The constraint itself
         // is defined in the evaluate_transition() method below, but here we need to specify
         // the expected degree of the constraint.
-        let degrees = vec![TransitionConstraintDegree::new(3)];
+        let degrees = vec![
+            TransitionConstraintDegree::new(16),
+            TransitionConstraintDegree::new(16)
+        ];
 
         // We also need to specify the exact number of assertions we will place against the
         // execution trace. This number must be the same as the number of items in a vector
@@ -339,9 +339,10 @@ impl Air for WorkAir {
             vec![bias_o.base_element(0)]
         ].concat()).into();
 
-        result[0] = (frame.next()[4] - dataset_hash) + (frame.next()[5] - w_b_hash);
+        result[0] = (frame.next()[4] - dataset_hash);
+        result[1] = (frame.next()[5] - w_b_hash);
         // TODO - Remove printing when debugging is complete
-        println!("flag: {}, frame.next()[4]: {}, dataset_hash: {}, frame.next()[5]: {}, w_b_hash: {}, frame.next()[-1]: {}, bias_o: {}, result: {}", flag, frame.next()[4], dataset_hash, frame.next()[5], w_b_hash, frame.next()[7usize + len_sample + len_sample * hidden_size + 2usize * hidden_size], bias_o, result[0]);
+        println!("flag: {}, frame.next()[4]: {}, dataset_hash: {}, frame.next()[5]: {}, w_b_hash: {}, frame.next()[-1]: {}, bias_o: {}, result: {}, {}", flag, frame.next()[4], dataset_hash, frame.next()[5], w_b_hash, frame.next()[7usize + len_sample + len_sample * hidden_size + 2usize * hidden_size], bias_o, result[0], result[1]);
     }
 
 
@@ -451,6 +452,7 @@ impl Prover for WorkProver {
         &self.options
     }
 }
+
 pub(crate) fn prove_work(
     num_epochs: usize,
     learning_rate: BaseElement,
@@ -485,7 +487,7 @@ pub(crate) fn prove_work(
     // Define proof options; these will be enough for ~96-bit security level.
     let options = ProofOptions::new(
         32, // number of queries
-        8,  // blowup factor
+        16,  // blowup factor
         0,  // grinding factor
         FieldExtension::None,
         8,   // FRI folding factor

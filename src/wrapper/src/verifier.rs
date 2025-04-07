@@ -1,6 +1,6 @@
 use winterfell::{
-    crypto::{hashers::Blake3_256, DefaultRandomCoin, MerkleTree},
-    math::{fields::f128::BaseElement, FieldElement, StarkField},
+    crypto::{hashers::{Blake3_256, Rp64_256}, DefaultRandomCoin, ElementHasher, MerkleTree},
+    math::{fields::f64::BaseElement, FieldElement, StarkField},
     verify,
     AcceptableOptions, Proof,
 };
@@ -15,14 +15,10 @@ fn update_hash(
     current_hash: BaseElement,
     inputs: &[BaseElement],
 ) -> BaseElement {
-    let mut hasher = Sha256::new();
-    hasher.update(current_hash.as_int().to_le_bytes());
-    for value in inputs.iter() {
-        hasher.update(value.as_int().to_le_bytes());
-    }
-    let hash_bytes = hasher.finalize();
-    let hash_value = u64::from_le_bytes(hash_bytes[..8].try_into().unwrap());
-    BaseElement::from(hash_value)
+    let hash_result = Rp64_256::hash_elements(
+        &[current_hash].iter().chain(inputs.iter()).cloned().collect::<Vec<_>>()
+    );
+    hash_result.as_elements()[0] // Extracting the first field element from the hash digest
 }
 
 pub(crate) fn verify_work(initial_model: Model, updated_model: Model, datahash: BaseElement, proof: Proof) -> bool {
