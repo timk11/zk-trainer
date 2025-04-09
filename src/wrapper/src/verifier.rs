@@ -11,25 +11,20 @@ use crate::prover::{Model, PublicInputs, WorkAir, WrappedBaseElement};
 type Blake3 = Blake3_256<BaseElement>;
 type VC = MerkleTree<Blake3>;
 
-fn update_hash(
-    current_hash: BaseElement,
-    inputs: &[BaseElement],
-) -> BaseElement {
-    let hash_result = Rp64_256::hash_elements(
-        &[current_hash].iter().chain(inputs.iter()).cloned().collect::<Vec<_>>()
-    );
-    hash_result.as_elements()[0] // Extracting the first field element from the hash digest
+fn row_hash(inputs: &[BaseElement]) -> BaseElement {
+    let digest = Rp64_256::hash_elements(inputs);
+    digest.as_elements()[0]
 }
 
 pub(crate) fn verify_work(initial_model: Model, updated_model: Model, datahash: BaseElement, proof: Proof) -> bool {
     // Convert initial and updated models into hashes
-    let start = update_hash(BaseElement::ZERO, &[
+    let start = row_hash(&[
         WrappedBaseElement::unwrap_vec(&initial_model.weights_input_hidden),
         WrappedBaseElement::unwrap_vec(&initial_model.weights_hidden_output),
         WrappedBaseElement::unwrap_vec(&initial_model.bias_hidden),
         vec![initial_model.bias_output.unwrap()]
     ].concat());
-    let updated = update_hash(BaseElement::ZERO, &[
+    let updated = row_hash(&[
         WrappedBaseElement::unwrap_vec(&updated_model.weights_input_hidden),
         WrappedBaseElement::unwrap_vec(&updated_model.weights_hidden_output),
         WrappedBaseElement::unwrap_vec(&updated_model.bias_hidden),

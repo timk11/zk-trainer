@@ -78,10 +78,15 @@ fn update_hash(
     current_hash: BaseElement,
     inputs: &[BaseElement],
 ) -> BaseElement {
-    let hash_result = Rp64_256::hash_elements(
+    let digest = Rp64_256::hash_elements(
         &[current_hash].iter().chain(inputs.iter()).cloned().collect::<Vec<_>>()
     );
-    hash_result.as_elements()[0] // Extracting the first field element from the hash digest
+    digest.as_elements()[0] // Extracting the first field element from the hash digest
+}
+
+fn row_hash(inputs: &[BaseElement]) -> BaseElement {
+    let digest = Rp64_256::hash_elements(inputs);
+    digest.as_elements()[0]
 }
 
 fn generate_nn_trace(
@@ -100,14 +105,14 @@ fn generate_nn_trace(
     assert!(num_columns <= 255, "Too many columns");
     let mut trace = TraceTable::new(num_columns, num_epochs * (num_samples + 1));
     let mut dataset_hash: BaseElement;
-    let mut w_b_hash = BaseElement::ZERO;
+    let mut w_b_hash: BaseElement;
 
     for epoch in 0..num_epochs {
         dataset_hash = BaseElement::ZERO;
         for sample_idx in 0..num_samples {
             let input = WrappedBaseElement::unwrap_vec(&dataset.input_matrix[sample_idx]);
             let expected = WrappedBaseElement::unwrap_vec(&dataset.expected_output)[sample_idx];
-            w_b_hash = update_hash(w_b_hash, &[
+            w_b_hash = row_hash(&[
                 WrappedBaseElement::unwrap_vec(&model.weights_input_hidden),
                 WrappedBaseElement::unwrap_vec(&model.weights_hidden_output),
                 WrappedBaseElement::unwrap_vec(&model.bias_hidden),
@@ -168,7 +173,7 @@ fn generate_nn_trace(
 
         // Append separator row (n+1) with zero sample data
         let zero_sample = vec![BaseElement::ZERO; dataset.input_matrix[0].len()];
-        w_b_hash = update_hash(w_b_hash, &[
+        w_b_hash = row_hash(&[
             WrappedBaseElement::unwrap_vec(&model.weights_input_hidden),
             WrappedBaseElement::unwrap_vec(&model.weights_hidden_output),
             WrappedBaseElement::unwrap_vec(&model.bias_hidden),
@@ -233,8 +238,8 @@ impl Air for WorkAir {
         // is defined in the evaluate_transition() method below, but here we need to specify
         // the expected degree of the constraint.
         let degrees = vec![
-            TransitionConstraintDegree::new(16),
-            TransitionConstraintDegree::new(16)
+            TransitionConstraintDegree::new(5),
+            TransitionConstraintDegree::new(30)
         ];
 
         // We also need to specify the exact number of assertions we will place against the
@@ -332,7 +337,7 @@ impl Air for WorkAir {
             bias_o += learning_rate * output_gradient.into() / E4.into();
         };
         
-        w_b_hash = update_hash(w_b_hash.base_element(0), &[
+        w_b_hash = row_hash(&[
             weights_ih.clone(),
             weights_ho.clone(),
             biases_h.clone(),
@@ -487,7 +492,7 @@ pub(crate) fn prove_work(
     // Define proof options; these will be enough for ~96-bit security level.
     let options = ProofOptions::new(
         32, // number of queries
-        16,  // blowup factor
+        32,  // blowup factor
         0,  // grinding factor
         FieldExtension::None,
         8,   // FRI folding factor
