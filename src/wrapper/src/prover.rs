@@ -238,8 +238,8 @@ impl Air for WorkAir {
         // is defined in the evaluate_transition() method below, but here we need to specify
         // the expected degree of the constraint.
         let degrees = vec![
-            TransitionConstraintDegree::new(5),
-            TransitionConstraintDegree::new(30)
+            TransitionConstraintDegree::new(7),
+            TransitionConstraintDegree::new(32)
         ];
 
         // We also need to specify the exact number of assertions we will place against the
