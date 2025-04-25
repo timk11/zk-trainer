@@ -117,7 +117,7 @@ fn generate_nn_trace(
                 vec![model.bias.clone().unwrap()]
             ].concat());
             trace.update_row(epoch * (num_samples + 1) + sample_idx, &[
-                vec![BaseElement::new(0)],
+                vec![BaseElement::new(1)],
                 vec![BaseElement::new(len_sample.try_into().unwrap())],
                 vec![learning_rate],
                 vec![dataset_hash], // Current dataset hash (previous row)
@@ -156,7 +156,7 @@ fn generate_nn_trace(
             vec![model.bias.clone().unwrap()]
         ].concat());
         trace.update_row((epoch + 1) * (num_samples + 1) - 1, &[
-            vec![BaseElement::new(1)],
+            vec![BaseElement::new(0)],
             vec![BaseElement::new(len_sample.try_into().unwrap())],
             vec![learning_rate],
             vec![dataset_hash],
@@ -212,7 +212,7 @@ impl Air for WorkAir {
         // the expected degree of the constraint.
         let degrees = vec![
             TransitionConstraintDegree::new(7),
-            TransitionConstraintDegree::new(32)
+            TransitionConstraintDegree::new(12)
         ];
 
         // We also need to specify the exact number of assertions we will place against the
@@ -233,7 +233,6 @@ impl Air for WorkAir {
     // be valid, if for all valid state transitions, transition constraints evaluate to all
     // zeros, and for any invalid transition, at least one constraint evaluates to a non-zero
     // value. The `frame` parameter will contain current and next states of the computation.
-    // TODO - how to handle this if start and result are vectors?
     fn evaluate_transition<E: FieldElement<BaseField = BaseElement> + From<Self::BaseField>>(
         &self,
         frame: &EvaluationFrame<E>,
@@ -242,8 +241,8 @@ impl Air for WorkAir {
     ) {
         // First, we'll read the current state, and use it to compute the expected next state.
 
-        // Then, we'll subtract the expected next state from the actual next state; this will
-        // evaluate to zero if and only if the expected and actual states are the same.
+        // Then, we'll subtract the expected next state (as hashes) from the actual next state;
+        // this will evaluate to zero if and only if the expected and actual states are the same.
 
         let current_state = frame.current();
         let flag = current_state[0].base_element(0).as_int();
@@ -251,7 +250,7 @@ impl Air for WorkAir {
         let learning_rate = current_state[2];
         let mut dataset_hash = current_state[3]; // Current dataset hash
         let mut w_b_hash = current_state[4]; // Hash of weights and biases
-        let input = current_state.get(5..(5usize + len_sample)); // Input feature
+        let input = current_state.get(5..(5usize + len_sample)); // Input features
         let expected = current_state[5usize + len_sample]; // Expected output
         let mut weights = current_state.get((6usize + len_sample)..(6usize + len_sample * 2usize))
             .map(|slice| slice.iter().map(|&e| e.base_element(0)).collect::<Vec<_>>())
@@ -260,31 +259,25 @@ impl Air for WorkAir {
 
         let mut output = bias;
 
-        if flag == 1 {
-            dataset_hash = BaseElement::ZERO.into();
-        } else {
-            dataset_hash = update_hash(
-                dataset_hash.base_element(0),
-                &[
-                    input.map(|slice| slice.iter().map(|&e| e.base_element(0)).collect::<Vec<_>>())
-                        .unwrap_or_default(),
-                    vec![expected.base_element(0)],
-                ].concat(),
-            ).into();
-        };
+        dataset_hash = (update_hash(
+            dataset_hash.base_element(0),
+            &[
+                input.map(|slice| slice.iter().map(|&e| e.base_element(0)).collect::<Vec<_>>())
+                    .unwrap_or_default(),
+                vec![expected.base_element(0)],
+            ].concat(),
+        ) * BaseElement::new(flag)).into();
 
-        if flag == 0 {
-            for i in 0..len_sample {
-                output += input.unwrap()[i] * weights[i].into() / E4.into();
-            }
+        for i in 0..len_sample {
+            output += input.unwrap()[i] * weights[i].into() / E4.into();
+        }
 
-            let error = output - expected;
-            let gradient = error.base_element(0);
-            for i in 0..len_sample {
-                weights[i] -= (learning_rate * gradient.into() * input.unwrap()[i] / E8.into()).base_element(0);
-            }
-            bias -= learning_rate * gradient.into() / E4.into();
-        };
+        let error = output - expected;
+        let gradient = error.base_element(0);
+        for i in 0..len_sample {
+            weights[i] -= (learning_rate * gradient.into() * input.unwrap()[i] * BaseElement::new(flag).into() / E8.into()).base_element(0);
+        }
+        bias -= learning_rate * gradient.into() * BaseElement::new(flag).into() / E4.into();
         
         w_b_hash = row_hash(&[
             weights.clone(),
