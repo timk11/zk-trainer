@@ -10,7 +10,7 @@ use candid::CandidType;
 mod prover;
 mod verifier;
 
-use crate::prover::{WrappedBaseElement, Model, Dataset, sigmoid_approx, prove_work};
+use crate::prover::{WrappedBaseElement, Model, Dataset, prove_work};
 use crate::verifier::verify_work;
 
 // Wrapped Proof for serialisation
@@ -36,7 +36,6 @@ const MODULUS: u64 = 18446744069414584321;
 #[ic_cdk::update]
 fn initialise_model(
     len_sample: usize,
-    hidden_size: usize,
 ) -> Model {
     // Helper function to generate deterministic values
     fn deterministic_value(seed: &[u8]) -> BaseElement {
@@ -47,28 +46,18 @@ fn initialise_model(
         BaseElement::new(num as u64 % 20_000 + MODULUS - 10_000) // Convert to BaseElement
     }
 
-    let weights_input_hidden = (0..(len_sample * hidden_size))
+    let weights = (0..len_sample)
         .map(|i| deterministic_value(&i.to_le_bytes()))
         .collect();
 
-    let weights_hidden_output = (0..hidden_size)
-        .map(|i| deterministic_value(&i.to_le_bytes()))
-        .collect();
+    let bias = BaseElement::ZERO;
 
-    let bias_hidden = vec![BaseElement::ZERO; hidden_size];
-
-    let bias_output = BaseElement::ZERO;
-
-    let wrapped_weights_input_hidden = WrappedBaseElement::wrap_vec(weights_input_hidden);
-    let wrapped_weights_hidden_output = WrappedBaseElement::wrap_vec(weights_hidden_output);
-    let wrapped_bias_hidden = WrappedBaseElement::wrap_vec(bias_hidden);
-    let wrapped_bias_output = WrappedBaseElement::wrap(bias_output);
+    let wrapped_weights = WrappedBaseElement::wrap_vec(weights);
+    let wrapped_bias = WrappedBaseElement::wrap(bias);
     
     Model {
-        weights_input_hidden: wrapped_weights_input_hidden,
-        weights_hidden_output: wrapped_weights_hidden_output,
-        bias_hidden: wrapped_bias_hidden,
-        bias_output: wrapped_bias_output,
+        weights: wrapped_weights,
+        bias: wrapped_bias,
     }
 }
 
@@ -97,25 +86,14 @@ fn verify(
 #[ic_cdk::update]
 fn predict(model: Model, input: Vec<WrappedBaseElement>) -> WrappedBaseElement {
     let len_sample = input.len();
-    let hidden_size = model.bias_hidden.len();
-
-    // Calculate hidden layer activations
-    let mut hidden_activations = vec![BaseElement::ZERO; hidden_size];
-    for h in 0..hidden_size {
-        let mut sum = WrappedBaseElement::unwrap_vec(&model.bias_hidden)[h];
-        for i in 0..len_sample {
-            sum += input[i].unwrap() * WrappedBaseElement::unwrap_vec(&model.weights_input_hidden)[h * len_sample + i];
-        }
-        hidden_activations[h] = sigmoid_approx(sum);
-    }
 
     // Calculate output
-    let mut output_sum = model.bias_output.unwrap();
-    for h in 0..hidden_size {
-        output_sum += hidden_activations[h] * WrappedBaseElement::unwrap_vec(&model.weights_hidden_output)[h];
+    let mut output = model.bias.unwrap();
+    for i in 0..len_sample {
+        output += input[i].unwrap() * WrappedBaseElement::unwrap_vec(&model.weights)[i];
     }
 
-    WrappedBaseElement::wrap(sigmoid_approx(output_sum)) // Final output
+    WrappedBaseElement::wrap(output) // Final output
 }
 
 fn convert_dataset(
@@ -208,12 +186,9 @@ mod tests {
     #[test]
     fn test_initialise_model() {
         let model = initialise_model(
-            10, // sample length
-            9   // hidden layer size
+            10 // sample length
         );
-        assert_eq!(model.weights_input_hidden.len(), 10 * 9);
-        assert_eq!(model.weights_hidden_output.len(), 9);
-        assert_eq!(model.bias_hidden.len(), 9);
+        assert_eq!(model.weights.len(), 10);
     }
 
     #[test]
@@ -240,7 +215,7 @@ mod tests {
         ];
         let num_epochs: usize = 8;
         let learning_rate = WrappedBaseElement(500);
-        let model = initialise_model(8, 12);
+        let model = initialise_model(8);
         let dataset = convert_dataset(sample_data, sample_expected).0;
         let result = train_and_prove(num_epochs, learning_rate, model, dataset);
     }

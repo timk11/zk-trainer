@@ -19,16 +19,12 @@ fn row_hash(inputs: &[BaseElement]) -> BaseElement {
 pub(crate) fn verify_work(initial_model: Model, updated_model: Model, datahash: BaseElement, proof: Proof) -> bool {
     // Convert initial and updated models into hashes
     let start = row_hash(&[
-        WrappedBaseElement::unwrap_vec(&initial_model.weights_input_hidden),
-        WrappedBaseElement::unwrap_vec(&initial_model.weights_hidden_output),
-        WrappedBaseElement::unwrap_vec(&initial_model.bias_hidden),
-        vec![initial_model.bias_output.unwrap()]
+        WrappedBaseElement::unwrap_vec(&initial_model.weights),
+        vec![initial_model.bias.unwrap()]
     ].concat());
     let updated = row_hash(&[
-        WrappedBaseElement::unwrap_vec(&updated_model.weights_input_hidden),
-        WrappedBaseElement::unwrap_vec(&updated_model.weights_hidden_output),
-        WrappedBaseElement::unwrap_vec(&updated_model.bias_hidden),
-        vec![updated_model.bias_output.unwrap()]
+        WrappedBaseElement::unwrap_vec(&updated_model.weights),
+        vec![updated_model.bias.unwrap()]
     ].concat());
 
     // The verifier will accept proofs with parameters which guarantee 95 bits or more of
