@@ -89,6 +89,21 @@ fn row_hash(inputs: &[BaseElement]) -> BaseElement {
     digest.as_elements()[0]
 }
 
+fn update_hash_E<E: FieldElement<BaseField = BaseElement>>(
+    current_hash: E,
+    inputs: &[E],
+) -> E {
+    let digest = Rp64_256::hash_elements(
+        &[current_hash].iter().chain(inputs.iter()).cloned().collect::<Vec<_>>()
+    );
+    digest.as_elements()[0].into() // Extracting the first field element from the hash digest
+}
+
+fn row_hash_E<E: FieldElement<BaseField = BaseElement>>(inputs: &[E]) -> E {
+    let digest = Rp64_256::hash_elements(inputs);
+    digest.as_elements()[0].into()
+}
+
 fn generate_nn_trace(
     num_epochs: usize,
     learning_rate: BaseElement,
@@ -100,15 +115,19 @@ fn generate_nn_trace(
     assert!(is_power_of_2(num_epochs), "Number of epochs must be a power of 2");
     assert!(is_power_of_2(num_samples + 1), "Number of samples + 1 must be a power of 2");
     assert_eq!(len_sample, model.weights.len(), "Number of model weights must match number of features");
-    let num_columns = len_sample * 2 + 7; // Includes flag, len_sample, learning_rate, sample, expected, dataset_hash, wb_hash, weights and biases
+    let num_columns = len_sample * 2 + 9; // Includes flag, len_sample, learning_rate, dataset_hash, wb_hash, sample, expected, weights and bias
     println!("num_samples: {num_samples}, len_sample: {len_sample}, num_columns: {num_columns}");
     assert!(num_columns <= 255, "Too many columns");
     let mut trace = TraceTable::new(num_columns, num_epochs * (num_samples + 1));
     let mut dataset_hash: BaseElement;
     let mut w_b_hash: BaseElement;
+    let mut output: BaseElement;
+    let mut error: BaseElement;
 
     for epoch in 0..num_epochs {
         dataset_hash = BaseElement::ZERO;
+        output = BaseElement::ZERO;
+        error = BaseElement::ZERO;
         for sample_idx in 0..num_samples {
             let input = WrappedBaseElement::unwrap_vec(&dataset.input_matrix[sample_idx]);
             let expected = WrappedBaseElement::unwrap_vec(&dataset.expected_output)[sample_idx];
@@ -122,6 +141,8 @@ fn generate_nn_trace(
                 vec![learning_rate],
                 vec![dataset_hash], // Current dataset hash (previous row)
                 vec![w_b_hash], // Hash of weights and biases (current row)
+                vec![output],
+                vec![error],
                 input.clone(), // Dataset sample
                 vec![expected], // Expected output
                 WrappedBaseElement::unwrap_vec(&model.weights),
@@ -129,13 +150,13 @@ fn generate_nn_trace(
             ].concat());
             dataset_hash = update_hash(dataset_hash, &[input.clone(), vec![expected]].concat());
             
-            let mut output = model.bias.unwrap();
+            output = model.bias.unwrap();
             for i in 0..input.len() {
                 output += input[i] * WrappedBaseElement::unwrap_vec(&model.weights)[i] / E4;
             }
     
             // Compute gradient and update weights
-            let error = output - expected;
+            error = output - expected;
             let gradient = error;
     
             for i in 0..input.len() {
@@ -161,6 +182,8 @@ fn generate_nn_trace(
             vec![learning_rate],
             vec![dataset_hash],
             vec![w_b_hash],
+            vec![output],
+            vec![error],
             zero_sample,
             vec![BaseElement::new(0)],
             WrappedBaseElement::unwrap_vec(&model.weights),
@@ -204,15 +227,16 @@ impl Air for WorkAir {
 
 
     // Here, we'll construct a new instance of our computation which is defined by 3 parameters:
-    // starting value, number of steps, and the end result. Another way to think about it is
-    // that an instance of our computation is a specific invocation of the do_work() function.
+    // starting model, final model, and the (private) dataset.
     fn new(trace_info: TraceInfo, pub_inputs: PublicInputs, options: ProofOptions) -> Self {
-        // Our computation requires a single transition constraint. The constraint itself
-        // is defined in the evaluate_transition() method below, but here we need to specify
-        // the expected degree of the constraint.
+        // Our computation requires transition constraints. The constraints themselves
+        // are defined in the evaluate_transition() method below, but here we need to specify
+        // the expected degree of each constraint.
         let degrees = vec![
             TransitionConstraintDegree::new(7),
-            TransitionConstraintDegree::new(12)
+            TransitionConstraintDegree::new(12),
+            TransitionConstraintDegree::new(3),
+            TransitionConstraintDegree::new(3)
         ];
 
         // We also need to specify the exact number of assertions we will place against the
@@ -240,54 +264,58 @@ impl Air for WorkAir {
         result: &mut [E], // as vector?
     ) {
         // First, we'll read the current state, and use it to compute the expected next state.
-
         // Then, we'll subtract the expected next state (as hashes) from the actual next state;
         // this will evaluate to zero if and only if the expected and actual states are the same.
 
-        let current_state = frame.current();
-        let flag = current_state[0].base_element(0).as_int();
-        let len_sample = usize::from(WrappedBaseElement::wrap(current_state[1].base_element(0)));
-        let learning_rate = current_state[2];
-        let mut dataset_hash = current_state[3]; // Current dataset hash
-        let mut w_b_hash = current_state[4]; // Hash of weights and biases
-        let input = current_state.get(5..(5usize + len_sample)); // Input features
-        let expected = current_state[5usize + len_sample]; // Expected output
-        let mut weights = current_state.get((6usize + len_sample)..(6usize + len_sample * 2usize))
-            .map(|slice| slice.iter().map(|&e| e.base_element(0)).collect::<Vec<_>>())
+        let current = frame.current();
+        let flag = current[0];
+        let len_sample = usize::from(WrappedBaseElement::wrap(current[1].base_element(0)));
+        let learning_rate = current[2];
+        let mut dataset_hash = current[3]; // Current dataset hash
+        // current[4] is hash of weights and biases from previous row
+        // current[5] is output from previous row
+        // current[6] is error from previous row
+        let input = current.get(7..(7usize + len_sample)); // Input features
+        let expected = current[7usize + len_sample]; // Expected output
+        let mut weights = current.get((8usize + len_sample)..(8usize + len_sample * 2usize))
+            .map(|slice| slice.iter().map(|&e| e).collect::<Vec<_>>())
             .unwrap_or_default(); // Weights
-        let mut bias = current_state[6usize + len_sample * 2usize]; // Bias
+        let mut bias = current[8usize + len_sample * 2usize]; // Bias
 
         let mut output = bias;
 
-        dataset_hash = (update_hash(
-            dataset_hash.base_element(0),
+        dataset_hash = update_hash_E(
+            dataset_hash,
             &[
-                input.map(|slice| slice.iter().map(|&e| e.base_element(0)).collect::<Vec<_>>())
+                input.map(|slice| slice.iter().map(|&e| e).collect::<Vec<_>>())
                     .unwrap_or_default(),
-                vec![expected.base_element(0)],
+                vec![expected],
             ].concat(),
-        ) * BaseElement::new(flag)).into();
+        ) * flag;
 
         for i in 0..len_sample {
-            output += input.unwrap()[i] * weights[i].into() / E4.into();
+            output += input.unwrap()[i] * weights[i] / E4.into();
         }
 
+        output = output * flag;
         let error = output - expected;
-        let gradient = error.base_element(0);
+        let gradient = error;
         for i in 0..len_sample {
-            weights[i] -= (learning_rate * gradient.into() * input.unwrap()[i] * BaseElement::new(flag).into() / E8.into()).base_element(0);
+            weights[i] -= (learning_rate * gradient * input.unwrap()[i] * flag / E8.into());
         }
-        bias -= learning_rate * gradient.into() * BaseElement::new(flag).into() / E4.into();
+        bias -= learning_rate * gradient * flag / E4.into();
         
-        w_b_hash = row_hash(&[
+        let w_b_hash = row_hash_E(&[
             weights.clone(),
-            vec![bias.base_element(0)]
-        ].concat()).into();
+            vec![bias]
+        ].concat());
 
         result[0] = frame.next()[3] - dataset_hash;
         result[1] = frame.next()[4] - w_b_hash;
+        result[2] = frame.next()[5] - output;
+        result[3] = frame.next()[6] - error;
         // TODO - Remove printing when debugging is complete
-        println!("flag: {}, frame.next()[3]: {}, dataset_hash: {}, frame.next()[4]: {}, w_b_hash: {}, frame.next()[-1]: {}, bias: {}, result: {}, {}", flag, frame.next()[3], dataset_hash, frame.next()[4], w_b_hash, frame.next()[6usize + len_sample * 2usize], bias, result[0], result[1]);
+        println!("--flag: {}, frame.next()[3]: {}, dataset_hash: {}, frame.next()[4]: {}, w_b_hash: {}, output: {}, error: {}, expected: {}, frame.next()[-1]: {}, bias: {}, result: {}, {}, {}, {}", flag, frame.next()[3], dataset_hash, frame.next()[4], w_b_hash, output, error, expected, frame.next()[8usize + len_sample * 2usize], bias, result[0], result[1], result[2], result[3]);
     }
 
 
@@ -295,8 +323,8 @@ impl Air for WorkAir {
     // for the computation to be valid. Essentially, this ties computation's execution trace
     // to the public inputs.
     fn get_assertions(&self) -> Vec<Assertion<Self::BaseField>> {
-        // for our computation to be valid, value in column 0 at step 0 must be equal to the
-        // starting value, and at the last step it must be equal to the result.
+        // For our computation to be valid, value in column 0 at step 0 must be equal to the
+        // hash of initial weights & biases, and similarly at the last step.
         let last_step = self.trace_length() - 1;
         vec![
             Assertion::single(3, 0, self.start), // hash of initial weights & biases
@@ -346,7 +374,7 @@ impl Prover for WorkProver {
     type ConstraintCommitment<E: FieldElement<BaseField = Self::BaseField>> =
         DefaultConstraintCommitment<E, Self::HashFn, Self::VC>;
 
-    // Our public inputs consist of the first and last value in the execution trace.
+    // Our public inputs consist of the hashes of the initial model, the final model and the dataset.
     fn get_pub_inputs(&self, trace: &Self::Trace) -> PublicInputs {
         let last_step = trace.length() - 1;
         PublicInputs {
