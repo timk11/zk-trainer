@@ -115,7 +115,7 @@ fn generate_nn_trace(
     assert!(is_power_of_2(num_epochs), "Number of epochs must be a power of 2");
     assert!(is_power_of_2(num_samples + 1), "Number of samples + 1 must be a power of 2");
     assert_eq!(len_sample, model.weights.len(), "Number of model weights must match number of features");
-    let num_columns = len_sample * 2 + 9; // Includes flag, len_sample, learning_rate, dataset_hash, wb_hash, sample, expected, weights and bias
+    let num_columns = len_sample * 2 + 11;//9; // Includes flag, len_sample, learning_rate, dataset_hash, wb_hash, sample, expected, weights and bias
     println!("num_samples: {num_samples}, len_sample: {len_sample}, num_columns: {num_columns}");
     assert!(num_columns <= 255, "Too many columns");
     let mut trace = TraceTable::new(num_columns, num_epochs * (num_samples + 1));
@@ -123,11 +123,15 @@ fn generate_nn_trace(
     let mut w_b_hash: BaseElement;
     let mut output: BaseElement;
     let mut error: BaseElement;
+    let mut step1: BaseElement;
+    let mut delta1: BaseElement;
 
     for epoch in 0..num_epochs {
         dataset_hash = BaseElement::ZERO;
         output = BaseElement::ZERO;
         error = BaseElement::ZERO;
+        step1 = BaseElement::ZERO;
+        delta1 = BaseElement::ZERO;
         for sample_idx in 0..num_samples {
             let input = WrappedBaseElement::unwrap_vec(&dataset.input_matrix[sample_idx]);
             let expected = WrappedBaseElement::unwrap_vec(&dataset.expected_output)[sample_idx];
@@ -146,7 +150,9 @@ fn generate_nn_trace(
                 input.clone(), // Dataset sample
                 vec![expected], // Expected output
                 WrappedBaseElement::unwrap_vec(&model.weights),
-                vec![model.bias.clone().unwrap()]
+                vec![model.bias.clone().unwrap()],
+                vec![step1],
+                vec![delta1]
             ].concat());
             dataset_hash = update_hash(dataset_hash, &[input.clone(), vec![expected]].concat());
             
@@ -154,6 +160,8 @@ fn generate_nn_trace(
             for i in 0..input.len() {
                 output += input[i] * WrappedBaseElement::unwrap_vec(&model.weights)[i] / E4;
             }
+
+            step1 = input[0] * WrappedBaseElement::unwrap_vec(&model.weights)[0];
     
             // Compute gradient and update weights
             error = output - expected;
@@ -164,6 +172,8 @@ fn generate_nn_trace(
                     - learning_rate * gradient * input[i] / E8;
                 model.weights[i] = WrappedBaseElement::wrap(new_weight);
             }
+
+            delta1 = learning_rate * gradient * input[0];
     
             let new_bias = WrappedBaseElement::unwrap(model.bias)
                 - learning_rate * gradient / E4;
@@ -187,7 +197,9 @@ fn generate_nn_trace(
             zero_sample,
             vec![BaseElement::new(0)],
             WrappedBaseElement::unwrap_vec(&model.weights),
-            vec![model.bias.clone().unwrap()]
+            vec![model.bias.clone().unwrap()],
+            vec![step1],
+            vec![delta1]
         ].concat());
     }
 
@@ -234,9 +246,12 @@ impl Air for WorkAir {
         // the expected degree of each constraint.
         let degrees = vec![
             TransitionConstraintDegree::new(7),
-            TransitionConstraintDegree::new(12),
+            TransitionConstraintDegree::new(7),
             TransitionConstraintDegree::new(3),
-            TransitionConstraintDegree::new(3)
+            TransitionConstraintDegree::new(1),
+            TransitionConstraintDegree::new(4),
+            TransitionConstraintDegree::new(2),
+            TransitionConstraintDegree::new(4)
         ];
 
         // We also need to specify the exact number of assertions we will place against the
@@ -268,62 +283,105 @@ impl Air for WorkAir {
         // this will evaluate to zero if and only if the expected and actual states are the same.
 
         let current = frame.current();
+        let next = frame.next();
         let flag = current[0];
-        let len_sample = usize::from(WrappedBaseElement::wrap(current[1].base_element(0)));
+        let len_sample = 8; //usize::from(WrappedBaseElement::wrap(current[1].base_element(0)));
         let learning_rate = current[2];
         let mut dataset_hash = current[3]; // Current dataset hash
         // current[4] is hash of weights and biases from previous row
         // current[5] is output from previous row
         // current[6] is error from previous row
-        let input = current.get(7..(7usize + len_sample)); // Input features
+        //let input = current.get(7..(7usize + len_sample)); // Input features
+        let (input1, input2, input3, input4) = (current[7], current[8], current[9], current[10]);
+        let (input5, input6, input7, input8) = (current[11], current[12], current[13], current[14]);
         let expected = current[7usize + len_sample]; // Expected output
         let mut weights = current.get((8usize + len_sample)..(8usize + len_sample * 2usize))
             .map(|slice| slice.iter().map(|&e| e).collect::<Vec<_>>())
             .unwrap_or_default(); // Weights
-        let mut bias = current[8usize + len_sample * 2usize]; // Bias
+        let (weight1, weight2, weight3, weight4) = (current[16], current[17], current[18], current[19]);
+        let (weight5, weight6, weight7, weight8) = (current[20], current[21], current[22], current[23]);
+        let bias = current[8usize + len_sample * 2usize]; // Bias
 
         let mut output = bias;
 
         dataset_hash = update_hash_E(
             dataset_hash,
             &[
-                input.map(|slice| slice.iter().map(|&e| e).collect::<Vec<_>>())
-                    .unwrap_or_default(),
-                vec![expected],
+                //input.map(|slice| slice.iter().map(|&e| e).collect::<Vec<_>>())
+                //    .unwrap_or_default(),
+                //vec![expected],
+                vec![current[7], current[8], current[9], current[10], current[11],
+                    current[12], current[13], current[14], current[15]]
             ].concat(),
         ) * flag;
 
-        for i in 0..len_sample {
-            output += input.unwrap()[i] * weights[i] / E4.into();
-        }
-
+        //for i in 0..len_sample {
+        //    output += input.unwrap()[i] * weights[i] / E4.into();
+        //}
+        let step1 = current[7] * current[16]; // input1 * weight1;
+        output += (input1 * weight1 / E4.into()) + (input2 * weight2 / E4.into()) + (input3 * weight3 / E4.into()) + (input4 * weight4 / E4.into());
+        output += (input5 * weight5 / E4.into()) + (input6 * weight6 / E4.into()) + (input7 * weight7 / E4.into()) + (input8 * weight8 / E4.into());
         output = output * flag;
-        let error = output - expected;
+
+        let error = next[5] - current[15]; // output - expected;
         let gradient = error;
-        for i in 0..len_sample {
-            weights[i] -= (learning_rate * gradient * input.unwrap()[i] * flag / E8.into());
-        }
-        bias -= learning_rate * gradient * flag / E4.into();
+        //for i in 0..len_sample {
+        //    weights[i] -= (learning_rate * gradient * input.unwrap()[i] * flag / E8.into());
+        //}
+        let delta1 = current[2] * next[6] * current[7] * current[0]; // learning_rate * gradient * input1 * flag;
+        let new_weight1 = weight1 - (learning_rate * gradient * input1 * flag / E8.into());
+        let new_weight2 = weight2 - (learning_rate * gradient * input2 * flag / E8.into());
+        let new_weight3 = weight3 - (learning_rate * gradient * input3 * flag / E8.into());
+        let new_weight4 = weight4 - (learning_rate * gradient * input4 * flag / E8.into());
+        let new_weight5 = weight5 - (learning_rate * gradient * input5 * flag / E8.into());
+        let new_weight6 = weight6 - (learning_rate * gradient * input6 * flag / E8.into());
+        let new_weight7 = weight7 - (learning_rate * gradient * input7 * flag / E8.into());
+        let new_weight8 = weight8 - (learning_rate * gradient * input8 * flag / E8.into());
+        
+        //bias -= learning_rate * gradient * flag / E4.into();
+        let new_bias = bias - learning_rate * gradient * flag / E4.into();
         
         let w_b_hash = row_hash_E(&[
-            weights.clone(),
-            vec![bias]
+            //weights.clone(),
+            //vec![bias]
+            vec![next[16], next[17], next[18], next[19], next[20],
+                next[21], next[22], next[23], next[24]]
         ].concat());
 
-        result[0] = frame.next()[3] - dataset_hash;
-        result[1] = frame.next()[4] - w_b_hash;
-        result[2] = frame.next()[5] - output;
-        result[3] = frame.next()[6] - error;
+        result[0] = next[3] - dataset_hash;
+        result[1] = next[4] - w_b_hash;
+        result[2] = next[5] - output;
+        result[3] = next[6] - error;
+        result[4] = next[16] - new_weight1;
+        result[5] = next[25] - step1;
+        result[6] = next[26] - delta1;
         // TODO - Remove printing when debugging is complete
-        println!("--flag: {}, frame.next()[3]: {}, dataset_hash: {}, frame.next()[4]: {}, w_b_hash: {}, output: {}, error: {}, expected: {}, frame.next()[-1]: {}, bias: {}, result: {}, {}, {}, {}", flag, frame.next()[3], dataset_hash, frame.next()[4], w_b_hash, output, error, expected, frame.next()[8usize + len_sample * 2usize], bias, result[0], result[1], result[2], result[3]);
+        println!("--flag: {}, next[3]: {}, dataset_hash: {}, next[4]: {}, w_b_hash: {}, output: {}, error: {}, expected: {}, next[-1]: {}, new_bias: {}, result: {}, {}, {}, {}, {}, {}, {}", flag, next[3], dataset_hash, next[4], w_b_hash, output, error, expected, next[8usize + len_sample * 2usize], new_bias, result[0], result[1], result[2], result[3], result[4], result[5], result[6]);
     }
+    /*
+    In the most recent update I've modified `evaluate_transition` so that all transitions are
+    expressed as strictly as possible in terms of evaluation frame elements, and added some
+    additional constraints for the sake of testing.
+
+    The current version of this function terminates with the following:
+
+        thread 'tests::test_train_and_prove' panicked at ~/.cargo/registry/src/index.crates.io-6f17d22bba15001f/winter-prover-0.12.0/src/constraints/evaluation_table.rs:214:9:
+            assertion `left == right` failed: transition constraint degrees didn't match
+            expected: [378, 378, 126,   0, 189,  63, 189]
+            actual:   [505, 511, 112,   0, 112,  56, 112]
+    
+    This suggests that only the `result[3] = next[6] - error` constraint is being handled
+    correctly. As shown with `step1` and `delta1`, it does not seem to make a difference whether
+    the E4 and E8 constants are used or not. My suspicion is that the underlying problem relates
+    to the use of `TransitionConstraintDegree` either in my code or the Winterfell source code.
+    */
 
 
     // Here, we'll define a set of assertions about the execution trace which must be satisfied
     // for the computation to be valid. Essentially, this ties computation's execution trace
     // to the public inputs.
     fn get_assertions(&self) -> Vec<Assertion<Self::BaseField>> {
-        // For our computation to be valid, value in column 0 at step 0 must be equal to the
+        // For our computation to be valid, value in column 3 at step 0 must be equal to the
         // hash of initial weights & biases, and similarly at the last step.
         let last_step = self.trace_length() - 1;
         vec![
